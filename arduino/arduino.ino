@@ -2,7 +2,7 @@
 
 #define HOST_SERIAL Serial
 #define DEV_SERIAL Serial1
-#define TEST_SERIAL Serial2
+
 #define SERIAL_SPEED 9600 
 #define MSG_MAX_SIZE 128
 
@@ -10,11 +10,10 @@
 #define MAX_MSG_LEN (256)
 
 #define PIN_MODE 22
-#define PIN_MODE_TEST 23
+
 #define DEV_MODE_TX HIGH
 #define DEV_MODE_RX LOW
 #define MAX_FUNC_NAME 16
-#define DEBUG
 #define CD_MAGIC_CONST (1000*5/(4095*4.5))
 
 #define MIN_VOLTAGE 100
@@ -23,15 +22,26 @@
 #define OK 0
 #define ERROR 1
 
+
+#define DEBUG
+#undef PRINTOUTS
+
+#ifdef DEBUG
+#define TEST_SERIAL Serial2
+#define REPLY_SERIAL TEST_SERIAL
+#define PIN_MODE_TEST 23
+#else
+#define REPLY_SERIAL DEV_SERIAL
+#endif
+
+
 byte READY = 0;
 
 byte hostmsg[MAX_MSG_LEN] = {0};
 byte msglen = 0;
 
-#ifdef DEBUG
-byte testmsg[MAX_MSG_LEN] = {0};
-byte testmsglen = 0;
-#endif
+byte reply[MAX_MSG_LEN] = {0};
+byte replylen = 0;
 
 typedef int(*cli_func_t)(void*);
 
@@ -65,19 +75,19 @@ int send_cmd(void *arg)
   if (NULL == arg)
     return ERROR;
   nstr = (char*)arg;
-#ifdef DEBUG
+#ifdef  PRINTOUTS
   HOST_SERIAL.print("send-cmd: arg is: ");
   HOST_SERIAL.println((char*)arg);
 #endif
   while (nstr = strtok(nstr, " "))
     {
       endptr = nstr;
-#ifdef DEBUG
+#ifdef  PRINTOUTS
       HOST_SERIAL.print("send-cmd: token is: ");
       HOST_SERIAL.println(nstr);
 #endif
       cmd[cmdlen] = (byte)strtol((const char*)nstr, &endptr, 16);
-#ifdef DEBUG
+#ifdef  PRINTOUTS
       HOST_SERIAL.print("send-cmd: token is converted to: ");
       HOST_SERIAL.println(cmd[cmdlen], HEX);
 #endif
@@ -88,7 +98,7 @@ int send_cmd(void *arg)
       cmdlen++;
       nstr = NULL;
     }
-#ifdef DEBUG
+#ifdef  PRINTOUTS
   HOST_SERIAL.print("send-cmd: going to send the following symbols: ");
   for (i = 0; i < cmdlen; ++i)
     {
@@ -115,7 +125,7 @@ int set_voltage(void *arg)
   if (arg != NULL)
     {
       str =  (char*)arg;
-#ifdef DEBUG
+#ifdef  PRINTOUTS
       HOST_SERIAL.print("Arg is: ");
       HOST_SERIAL.println(str);
 #endif
@@ -123,7 +133,7 @@ int set_voltage(void *arg)
       if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
 	return ERROR;
       voltage = ceil(voltage/CD_MAGIC_CONST);
-#ifdef DEBUG
+#ifdef  PRINTOUTS
       HOST_SERIAL.print("Going to set voltage to: ");
       HOST_SERIAL.println(voltage, 2);
 #endif
@@ -161,7 +171,9 @@ int cli_parser(byte* string, byte len)
 	  return cli[i].cli_func((void*)arg);
 	}
     }
+#ifdef  PRINTOUTS
   HOST_SERIAL.println("I can't parse your line");
+#endif
   return ERROR;
 }
 
@@ -174,12 +186,16 @@ void setup()
 {
   READY = 0;
   pinMode(PIN_MODE, OUTPUT);
+#ifdef DEBUG
   pinMode(PIN_MODE_TEST, OUTPUT);
-  setDevMode(PIN_MODE, DEV_MODE_RX);
   setDevMode(PIN_MODE_TEST, DEV_MODE_RX);
+#endif
+  setDevMode(PIN_MODE, DEV_MODE_RX);
   HOST_SERIAL.begin(SERIAL_SPEED);
   DEV_SERIAL.begin(SERIAL_SPEED);
+#ifdef DEBUG
   TEST_SERIAL.begin(SERIAL_SPEED);
+#endif
 }
 
 
@@ -257,16 +273,12 @@ void loop()
   }
   if ((msglen = readHostLine(HOST_SERIAL, hostmsg)) > 0)
     {
-      #ifdef DEBUG
-      TEST_SERIAL.flush();
-      #endif
+      REPLY_SERIAL.flush();
       byte res = cli_parser(hostmsg, msglen);
-      #ifdef DEBUG
-      if ((OK == res) && (testmsglen = readMsg(TEST_SERIAL, testmsg)) > 0)
+      if ((OK == res) && (replylen = readMsg(REPLY_SERIAL, reply)) > 0)
 	{
-	  sendMsgHexToHost(HOST_SERIAL, testmsg, testmsglen);
+	  sendMsgHexToHost(HOST_SERIAL, reply, replylen);
 	}
-      #endif
     }
   delay(200);    
 }
