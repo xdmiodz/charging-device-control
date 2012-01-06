@@ -7,6 +7,7 @@ import numpy as np
 import struct
 import serial
 import threading
+import time
 
 class SerialRxEvent(object):
     def __init__(self, data):
@@ -21,6 +22,8 @@ class EventHandler(object):
         self.__events.append(event)
     def delete(self, event):
         self.__events.remove(event)
+    def clear(self):
+        del self.__events[:]
     def fire(self):
         if len(self.__events) > 0:
             [self.handler(event.data) for event in self.__events]
@@ -37,9 +40,8 @@ class ChargeDeviceControl(object):
         self.eventalive = threading.Event()
     
     def printRx(self, data):
-        print ""
-        print "received>%s" % data
-
+        sys.stdout.write(data)
+        sys.stdout.flush()
     def eventThread(self):
         while self.eventalive.is_set():
             self.rxevents.fire()
@@ -58,13 +60,16 @@ class ChargeDeviceControl(object):
         
     def rxThread(self):
         while self.rxalive.is_set():               #loop while alive event is true
+            #text = ''
             text = self.serial.read(1)          #read one, with timout
             if text:                            #check if not timeout
                 n = self.serial.inWaiting()     #look if there is more to read
                 if n:
                     text = text + self.serial.read(n) #get it
-                event = SerialRxEvent(text)
-                self.rxevents.add(event)
+                    event = SerialRxEvent(text)
+                   # print "add event with text %s" % text
+                    self.rxevents.add(event)
+                    #time.sleep(1)
 
         
     def StopRxThread(self):
@@ -80,7 +85,7 @@ class ChargeDeviceControl(object):
             self.eventalive.clear()          #clear alive event for thread
             self.eventthread.join()          #wait until thread has finished
             self.eventthread = None
-            
+        self.rxevents.clear()   
     def arr2str(self, arr):
         return ''.join([chr(i) for i in arr])
         
@@ -119,6 +124,7 @@ class ChargeDeviceControl(object):
         try:
             self.serial.open()
             self.serial.flushInput()
+            self.serial.flushOutput()
             if self.serial.isOpen():
                 print """Port %s opened""" % port
                 if self.rxthread == None:
