@@ -13,7 +13,7 @@
 
 #define DEV_MODE_TX HIGH
 #define DEV_MODE_RX LOW
-#define MAX_FUNC_NAME 16
+#define MAX_FUNC_NAME 32
 #define CD_MAGIC_CONST (1000*5/(4095*4.5))
 
 #define MIN_VOLTAGE 100
@@ -23,8 +23,8 @@
 #define ERROR 1
 
 
-#define DEBUG
-#undef PRINTOUTS
+#undef DEBUG
+#define PRINTOUTS
 
 #ifdef DEBUG
 #define TEST_SERIAL Serial2
@@ -53,7 +53,8 @@ typedef struct cli
 
 const cli_t cli[] = {{"help",        &display_help}, 
 		     {"set-voltage", &set_voltage},
-		     {"send-cmd",    &send_cmd}};
+		     {"send-cmd",    &send_cmd},
+	             {"get-current-voltage", &get_current_voltage}};
 
 byte chksum(byte* cmd, byte len)
 {
@@ -64,6 +65,17 @@ byte chksum(byte* cmd, byte len)
   return ~chks;
 }
 
+int get_current_voltage(void *arg)
+{
+    byte cmd[5] = {0};
+    cmd[0] = 1;
+    cmd[1] = 3;
+    cmd[2] = byte('B');
+    cmd[3] = 1;
+    cmd[4] = chksum(cmd,5);
+    sendMsgBin(DEV_SERIAL, cmd, 5, PIN_MODE);
+    return OK;
+}
 
 int send_cmd(void *arg)
 {
@@ -132,14 +144,15 @@ int set_voltage(void *arg)
       voltage = (float)strtod(str, &endptr);
       if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
 	return ERROR;
-      voltage = ceil(voltage/CD_MAGIC_CONST);
 #ifdef  PRINTOUTS
       HOST_SERIAL.print("Going to set voltage to: ");
-      HOST_SERIAL.println(voltage, 2);
+      HOST_SERIAL.print(voltage, 2);
+      HOST_SERIAL.println(" V");
 #endif
     }
   else
     return ERROR;
+  voltage = voltage/1000;
   cmd[0] = 1; //device number
   cmd[1] = 6; //length of the cmd
   cmd[2] = byte('F'); //command code
@@ -164,9 +177,7 @@ int cli_parser(byte* string, byte len)
 		       (const char*)cli[i].name, 
 		       fnamelen))
 	{
-	  if ((fnamelen == slen) || (string[fnamelen + 1] == byte('\0')))
-	    return ERROR;
-	  char* arg = (char*)&string[fnamelen + 1];
+	  char* arg = (char*)&string[fnamelen];
 	  
 	  return cli[i].cli_func((void*)arg);
 	}
@@ -274,11 +285,12 @@ void loop()
   if ((msglen = readHostLine(HOST_SERIAL, hostmsg)) > 0)
     {
       REPLY_SERIAL.flush();
-      byte res = cli_parser(hostmsg, msglen);
-      if ((OK == res) && (replylen = readMsg(REPLY_SERIAL, reply)) > 0)
-	{
-	  sendMsgHexToHost(HOST_SERIAL, reply, replylen);
-	}
+      cli_parser(hostmsg, msglen);
     }
+  REPLY_SERIAL.flush();
+  if ((replylen = readMsg(REPLY_SERIAL, reply)) > 0)
+  {
+     sendMsgHexToHost(HOST_SERIAL, reply, replylen);
+  }
   delay(200);    
 }
