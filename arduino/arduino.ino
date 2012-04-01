@@ -216,7 +216,7 @@ void sendSerialData(struct _rs485 * rs485)
   if (rs485->cmdlen == 0)
     return;
 
-  if (rs485->sent <= rs485->cmdlen)
+  if (rs485->sent < rs485->cmdlen)
     {
       rs485->serial.write(rs485->sendbuf[rs485->sent]);
       delay(calDelay(1, rs485->baudrate));
