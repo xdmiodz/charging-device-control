@@ -1,214 +1,292 @@
-#include "stdlib.h"
+#include <LiquidCrystal.h>
+#define FIELD_SENSOR A0    // select the input pin for the potentiometer
 
-#define HOST_SERIAL Serial
-#define DEV_SERIAL Serial1
+int referenceVal = 500;
 
-#define SERIAL_SPEED 9600 
-#define MSG_MAX_SIZE 128
-
-#define RESPONSE_TIMEOUT  100 //in ms
-#define MAX_MSG_LEN (256)
-
-#define PIN_MODE 22
-
-#define DEV_MODE_TX HIGH
-#define DEV_MODE_RX LOW
-#define MAX_FUNC_NAME 32
-#define CD_MAGIC_CONST (1000*5/(4095*4.5))
-
-#define MIN_VOLTAGE 100
-#define MAX_VOLTAGE 500
-
-#define OK 0
-#define ERROR 1
-
-
-#undef DEBUG
-#define PRINTOUTS
-
-#ifdef DEBUG
-#define TEST_SERIAL Serial2
-#define REPLY_SERIAL TEST_SERIAL
-#define PIN_MODE_TEST 23
-#else
-#define REPLY_SERIAL DEV_SERIAL
-#endif
-
-
-byte READY = 0;
-
-byte hostmsg[MAX_MSG_LEN] = {0};
-byte msglen = 0;
+#define MAX_MSG_LEN (128)
 
 byte reply[MAX_MSG_LEN] = {0};
 byte replylen = 0;
 
-typedef int(*cli_func_t)(void*);
+#define SERIAL_SPEED 9600 
+#define RESPONSE_TIMEOUT  500 //in ms
 
-typedef struct cli
+#define DEV_MODE_TX HIGH
+#define DEV_MODE_RX LOW
+#define PfeiferSerial Serial2
+#define PfeiferControlPin 36
+
+
+
+struct timer 
 {
-  char name[MAX_FUNC_NAME];
-  cli_func_t cli_func;
-}cli_t; 
+  unsigned long startTime;
+  unsigned long periodTime;
+  void (*callback) (void*);
+  void (*nocallback) (void*); //This callback is called if the timer is still running
+};
 
-const cli_t cli[] = {{"help",        &display_help}, 
-		     {"set-voltage", &set_voltage},
-		     {"send-cmd",    &send_cmd},
-	             {"get-current-voltage", &get_current_voltage}};
+//timer structure for Pfeifer
+struct timer PfeiferTimer;
 
-byte chksum(byte* cmd, byte len)
+//timer structure for AnalogInput
+struct timer MFieldTimer;
+
+//timer structure for Button
+struct timer ButtonTimer;
+
+struct _mfieldvals
 {
-  byte i;
-  byte chks = 0;
-  for (i = 0; i < len - 1; ++i)
-    chks ^= cmd[i];
-  return ~chks;
-}
+  long currentField;
+  long accumulatedRaw;
+  long accumulatedRawCurrent;
+  long setField;
+  float rawCorrection;
+  byte sensorPin;
+  LiquidCrystal *lcd;
+  unsigned long counts;
+  
+  /*coeeficients to  parabola*/
+  float a; 
+  float b;
+  float c;
+  
+#define MAX_VOLTAGE 500
+#define MIN_VOLTAGE 100
+  long maxval;
+  long minval;
+} mfieldvals;
 
-int get_current_voltage(void *arg)
+#define BUTTON_PIN 42
+struct _button
 {
-    byte cmd[5] = {0};
-    cmd[0] = 1;
-    cmd[1] = 3;
-    cmd[2] = byte('B');
-    cmd[3] = 1;
-    cmd[4] = chksum(cmd,5);
-    sendMsgBin(DEV_SERIAL, cmd, 5, PIN_MODE);
-    return OK;
-}
+#define BUTTON_MODE_COARSE 0
+#define BUTTON_MODE_FINE   1
+  byte buttonMode;
 
-int send_cmd(void *arg)
-{
-  byte cmd[MAX_MSG_LEN];
-  char* nstr = NULL;
-  char* endptr = NULL;
-  byte cmdlen = 0;
-  byte i;
-  if (NULL == arg)
-    return ERROR;
-  nstr = (char*)arg;
-#ifdef  PRINTOUTS
-  HOST_SERIAL.print("send-cmd: arg is: ");
-  HOST_SERIAL.println((char*)arg);
-#endif
-  while (nstr = strtok(nstr, " "))
-    {
-      endptr = nstr;
-#ifdef  PRINTOUTS
-      HOST_SERIAL.print("send-cmd: token is: ");
-      HOST_SERIAL.println(nstr);
-#endif
-      cmd[cmdlen] = (byte)strtol((const char*)nstr, &endptr, 16);
-#ifdef  PRINTOUTS
-      HOST_SERIAL.print("send-cmd: token is converted to: ");
-      HOST_SERIAL.println(cmd[cmdlen], HEX);
-#endif
-      if (endptr == nstr)
-	{
-	  return ERROR;
-	}
-      cmdlen++;
-      nstr = NULL;
-    }
-#ifdef  PRINTOUTS
-  HOST_SERIAL.print("send-cmd: going to send the following symbols: ");
-  for (i = 0; i < cmdlen; ++i)
-    {
-      HOST_SERIAL.print(cmd[i], HEX);
-      HOST_SERIAL.print(" ");
-    }
-  HOST_SERIAL.println("");
-#endif
-  sendMsgBin(DEV_SERIAL, cmd, cmdlen, PIN_MODE);
-  return OK;
-}
-
-int display_help(void* arg)
-{
-  return ERROR;
-}
+#define BUTTON_STATE_ON     HIGH
+#define BUTTON_STATE_OFF    LOW
+  byte buttonState;
+  
+  byte buttonPin;
+#define BUTTON_MODE_CHANGE_TIMEOUT 2000
+  unsigned long pushDown; //time of recent push down
+  unsigned long pushUp; //time of recent push up  
+  
+  byte previousState;
+  struct _mfieldvals * mcontrol;
+  
+} button;
 
 
-int set_voltage(void *arg)
-{
-  float voltage = 0;
-  char* endptr, *str;
-  byte cmd[8] = {0};
-  if (arg != NULL)
-    {
-      str =  (char*)arg;
-#ifdef  PRINTOUTS
-      HOST_SERIAL.print("Arg is: ");
-      HOST_SERIAL.println(str);
-#endif
-      voltage = (float)strtod(str, &endptr);
-      if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
-	return ERROR;
-#ifdef  PRINTOUTS
-      HOST_SERIAL.print("Going to set voltage to: ");
-      HOST_SERIAL.print(voltage, 2);
-      HOST_SERIAL.println(" V");
-#endif
-    }
-  else
-    return ERROR;
-  voltage = voltage/1000;
-  cmd[0] = 1; //device number
-  cmd[1] = 6; //length of the cmd
-  cmd[2] = byte('F'); //command code
-  cmd[3] = ((byte*)(&voltage))[0];
-  cmd[4] = ((byte*)(&voltage))[1];
-  cmd[5] = ((byte*)(&voltage))[2];
-  cmd[6] = ((byte*)(&voltage))[3];
-  cmd[7] = chksum(cmd, 8);
-  sendMsgBin(DEV_SERIAL, cmd, 8, PIN_MODE);
-  return OK;
-}
-
-int cli_parser(byte* string, byte len)
-{
-  static byte nclis = sizeof(cli)/sizeof(cli_t);
-  byte i = 0;
-  byte slen = strlen((char*)string);
-  for (i = 0; i < nclis; ++i)
-    {
-      byte fnamelen = strlen(cli[i].name);
-      if (0 == strncmp((const char*)string, 
-		       (const char*)cli[i].name, 
-		       fnamelen))
-	{
-	  char* arg = (char*)&string[fnamelen];
-	  
-	  return cli[i].cli_func((void*)arg);
-	}
-    }
-#ifdef  PRINTOUTS
-  HOST_SERIAL.println("I can't parse your line");
-#endif
-  return ERROR;
-}
-
-void setDevMode(byte pinMode, byte devMode)
-{
-  digitalWrite(pinMode, devMode);
-}
+// инициализируем LCD, указывая контакты данных
+LiquidCrystal lcd(32, 22, 24, 26, 28, 30);
 
 void setup()
 {
-  READY = 0;
-  pinMode(PIN_MODE, OUTPUT);
-#ifdef DEBUG
-  pinMode(PIN_MODE_TEST, OUTPUT);
-  setDevMode(PIN_MODE_TEST, DEV_MODE_RX);
-#endif
-  setDevMode(PIN_MODE, DEV_MODE_RX);
-  HOST_SERIAL.begin(SERIAL_SPEED);
-  DEV_SERIAL.begin(SERIAL_SPEED);
-#ifdef DEBUG
-  TEST_SERIAL.begin(SERIAL_SPEED);
-#endif
+  // указываем размерность экрана и начинаем работать
+  lcd.begin(16, 4);
+    lcd.print("P: "); 
+  lcd.setCursor(0, 1);
+ 
+  // Пишем вторую строку
+  lcd.print("B: "); 
+  // initialize the pushbutton pin as an input:
+  //pinMode(buttonPin, INPUT);   
+  
+  //Set Serial for pfeifer device
+  pinMode(PfeiferControlPin, OUTPUT); 
+  PfeiferSerial.begin(SERIAL_SPEED);
+  setDevMode(PfeiferControlPin, DEV_MODE_RX);
+  
+  //init timer for Pfeifer Device
+  PfeiferTimer.startTime = millis();
+  PfeiferTimer.periodTime = 1000;
+  PfeiferTimer.callback = updatePfeifer;
+  PfeiferTimer.nocallback = NULL;
+  
+  //init values for magnetic field varistor
+  mfieldvals.currentField = 0;
+  mfieldvals.accumulatedRaw = 0;
+  mfieldvals.lcd = &lcd;
+  mfieldvals.sensorPin = FIELD_SENSOR;
+  mfieldvals.counts = 0;
+  mfieldvals.maxval = MAX_VOLTAGE;
+  mfieldvals.minval = MIN_VOLTAGE;
+  mfieldvals.rawCorrection = 0;
+  mfieldvals.a = 0;
+  mfieldvals.b = MAX_VOLTAGE - MIN_VOLTAGE;
+  mfieldvals.c = MIN_VOLTAGE;
+  
+  //init timer for mfield varistor
+  MFieldTimer.startTime = millis();
+  MFieldTimer.periodTime = 100;
+  MFieldTimer.callback = printMfieldResistorValue;
+  MFieldTimer.nocallback = accumulateAnalogRead;
+  
+
+  //init button
+  button.buttonMode = BUTTON_MODE_COARSE;
+  button.buttonState = BUTTON_STATE_OFF;
+  button.buttonPin = BUTTON_PIN;
+  button.mcontrol = &mfieldvals;
+  button.pushDown = millis();
+  button.pushUp = button.pushDown;
+  button.previousState = BUTTON_STATE_OFF;
+  
+  //init button timer
+  ButtonTimer.nocallback = buttonModeStateTransition;
+  ButtonTimer.callback = NULL;  
 }
 
+void printButtonMode(struct _button * mbutton)
+{
+    struct _mfieldvals * mfv = mbutton->mcontrol;
+    mfv->lcd->setCursor (14,1);
+    if (BUTTON_MODE_FINE == mbutton->buttonMode)
+    {
+      mfv->lcd->print (char(0x5E));
+      mfv->lcd->print (char(0x5E));
+      return;
+    }
+    if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+    {
+      mfv->lcd->print (" ");
+      mfv->lcd->print (char(0x5E));
+      return;
+    }
+}
+
+void setCoarseMode (struct _button * mbutton)
+{
+   struct _mfieldvals * mfv = mbutton->mcontrol;
+   mbutton->buttonMode = BUTTON_MODE_COARSE;   
+
+   mfv->rawCorrection = 0.;
+   float x = mfv->accumulatedRawCurrent/1024.;
+   if ((x > 0) && (x < 1))
+   {
+        mfv->a = (1/x/(x-1))*(mfv->currentField - MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
+   }
+   else
+       mfv->a = 0;
+       
+   mfv->b = (MAX_VOLTAGE - MIN_VOLTAGE) - mfv->a;
+   mfv->c = MIN_VOLTAGE;
+   
+   printButtonMode(mbutton);
+}
+
+void setFineMode (struct _button * mbutton)
+{
+   struct _mfieldvals * mfv = mbutton->mcontrol;
+   mbutton->buttonMode = BUTTON_MODE_FINE;
+   long currentField = mfv->currentField;
+   mfv->minval = (currentField / 100)*100;
+   mfv->maxval =  mfv->minval + 100;
+   long k2 = (mfv->maxval -  mfv->minval);
+   long b2 = mfv->minval;
+   
+   mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + b2 - currentField)/k2;   
+   
+   mfv->a = 0;    
+   mfv->b = k2;
+   mfv->c = b2;
+   
+  printButtonMode(mbutton);
+   
+}
+
+void changeButtonMode (struct _button * mbutton)
+{
+   if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+   {
+     setFineMode (mbutton);
+     return;
+    }
+    if (BUTTON_MODE_FINE == mbutton->buttonMode)
+    {
+      setCoarseMode (mbutton);
+      return;
+    }
+}
+
+void buttonModeStateTransition (void* arg)
+{
+  struct _button * mbutton = (struct _button *)arg;
+  byte state = digitalRead(mbutton->buttonPin);
+  struct _mfieldvals * mfv = mbutton->mcontrol;
+  
+  printButtonMode(mbutton);
+  
+  if (BUTTON_STATE_ON == state && BUTTON_STATE_OFF == mbutton->previousState)
+  {
+     mbutton->previousState = BUTTON_STATE_ON;
+     mbutton->pushDown = millis();
+     return;
+  }
+  
+  if (BUTTON_STATE_OFF == state && BUTTON_STATE_ON == mbutton->previousState)
+  {
+     mbutton->previousState = BUTTON_STATE_OFF;
+     mbutton->pushUp = millis();
+
+     if (mbutton->pushUp < mbutton->pushDown)
+       return;
+       
+     if ((mbutton->pushUp - mbutton->pushDown) < BUTTON_MODE_CHANGE_TIMEOUT)
+     {
+         //fast click
+         changeButtonMode(mbutton);
+         return;
+     }
+     else
+     {
+         //long click;
+        return;
+     }
+     return;
+  }
+  if (BUTTON_STATE_ON == state && BUTTON_STATE_ON == mbutton->previousState)
+  {
+    unsigned long currentTime = millis();
+    if (currentTime < mbutton->pushDown)
+      return;
+     
+    if ((currentTime - mbutton->pushDown) < BUTTON_MODE_CHANGE_TIMEOUT)
+    {
+      changeButtonMode(mbutton);
+      mbutton->pushDown = currentTime;
+      return;
+    }
+  }
+  
+}
+
+void printMfieldResistorValue (void* arg)
+{
+  struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
+  mfv->accumulatedRawCurrent = ceil(mfv->accumulatedRaw/mfv->counts);
+  float x = mfv->accumulatedRawCurrent/1024. - mfv->rawCorrection;
+  long currentField = floor(mfv->a*x*x + mfv->b*x + mfv->c);
+  if (currentField != mfv->currentField)
+  {
+    printEmptyLine(mfv->lcd, 3, 1, 4);
+    mfv->lcd->setCursor(3, 1);
+    mfv->lcd->print(currentField); 
+    mfv->currentField = currentField; 
+  }
+  mfv->accumulatedRaw = 0;
+  mfv->counts = 0;
+}
+
+void accumulateAnalogRead(void* arg)
+{
+   struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
+   
+   mfv->accumulatedRaw += analogRead(mfv->sensorPin);
+   mfv->counts++;
+}
 
 byte readMsg(HardwareSerial serial, byte* buffer)
 {  
@@ -225,72 +303,83 @@ byte readMsg(HardwareSerial serial, byte* buffer)
     return len;
 }
 
-byte readHostLine(HardwareSerial serial, byte* buffer)
-{
-  static byte reads = 0;
-  while (serial.available())
-    {
-      buffer[reads] = serial.read();
-      if (buffer[reads] == byte('\n'))
-	{
-	  buffer[reads] = '\0';
-	  byte res = reads;
-	  reads = 0;
-	  return res;
-	}
-      reads++;
-    }
-  return 0;
-}
-
-void sendMsgBin(HardwareSerial serial, byte* buffer, byte len, byte rxPin)
-{
-    byte i;
-    if (rxPin)
-      setDevMode(rxPin, DEV_MODE_TX);
-    delay(5);  
-    serial.write(buffer, len);
-    delay(calcDelay(len + 1, SERIAL_SPEED));
-    if (rxPin)  
-      setDevMode(rxPin, DEV_MODE_RX);
-}
-
-void sendMsgHexToHost(HardwareSerial serial, byte* buffer, byte len)
-{
-    byte i;
-    for (i = 0; i < len; ++i)
-    {
-      serial.print(buffer[i], HEX);
-      delay(calcDelay(2, SERIAL_SPEED));
-      serial.print(" ");
-      delay(calcDelay(2, SERIAL_SPEED));
-    }
-   serial.println("");   
-   delay(calcDelay(2, SERIAL_SPEED));
-}
-
 byte calcDelay(byte len, int speed)
 {
    return ceil(8*len/(speed/1000.));
 }
 
-void loop()
+void setDevMode(byte pin, byte devMode)
 {
-  if (!READY) 
+  digitalWrite(pin, devMode);
+}
+
+void checkTimer (struct timer* Timer, void* arg)
+{
+  if (Timer->callback)
   {
-    HOST_SERIAL.println("READY!");
-    READY = 1;
-    delay(200);
-  }
-  if ((msglen = readHostLine(HOST_SERIAL, hostmsg)) > 0)
+    unsigned long currTime = millis();
+    if (currTime - Timer->startTime > Timer->periodTime)
     {
-      REPLY_SERIAL.flush();
-      cli_parser(hostmsg, msglen);
+      Timer->callback(arg);
+      Timer->startTime = currTime;
+      return;
     }
-  REPLY_SERIAL.flush();
-  if ((replylen = readMsg(REPLY_SERIAL, reply)) > 0)
-  {
-     sendMsgHexToHost(HOST_SERIAL, reply, replylen);
   }
-  delay(200);    
+  if (Timer->nocallback)
+    Timer->nocallback (arg);
+}
+
+void updatePfeifer(void *arg)
+{
+  //PfeiferSerial.flush();
+   //delay(5);
+   setDevMode(PfeiferControlPin, DEV_MODE_TX);
+   
+   //PfeiferSerial.println("MOD?");
+   PfeiferSerial.write((byte('M')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   PfeiferSerial.write((byte('O')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   PfeiferSerial.write((byte('D')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   PfeiferSerial.write((byte('?')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   PfeiferSerial.write((byte('\r')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   PfeiferSerial.write((byte('\n')));
+   delay(calcDelay(1, SERIAL_SPEED));
+   //delay(50);
+   setDevMode(PfeiferControlPin, DEV_MODE_RX); 
+   if ((replylen = readMsg(PfeiferSerial, reply)) > 0)
+   { 
+     printEmptyLine(&lcd,3, 0, 13);
+     lcd.setCursor(3, 0);
+    // lcd.print("W");
+     lcd.print((const char*)reply);
+   }
+}
+
+
+ 
+void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine, byte maxLen)
+{
+   byte i;
+   lcd->setCursor(startPos, startLine);
+   for (i = 0; i < maxLen; ++i)
+     lcd->print(" ");
+}
+
+
+int readVoltage()
+{
+  return 500;
+}
+
+
+
+void loop()
+{ 
+  //checkTimer (&PfeiferTimer, NULL);
+  checkTimer (&MFieldTimer, &mfieldvals);
+  checkTimer (&ButtonTimer, &button);
 }
