@@ -78,18 +78,38 @@ struct _button
   
 } button;
 
+struct _rs485
+{
+#define MAX_LEN_MSG 128
+  unsigned byte sent;
+  char sendbuf[MAX_LEN_MSG];
+  unsigned byte recvd;
+  char recvbuf[MAX_LEN_MSG];
+  unsigned int baudrate;
 
-// инициализируем LCD, указывая контакты данных
+  unsigned byte cmdlen;
+
+  /*number of printed bytes*/
+  unsigned byte printd;
+  
+#define RS485_MODE_TX HIGH
+#define RS485_MODE_RX LOW  
+  boolean mode;
+  byte controlPin;
+  
+  HardwareSerial* serial;
+};
+
+// set contol pins for lcd
 LiquidCrystal lcd(32, 22, 24, 26, 28, 30);
 
 void setup()
 {
-  // указываем размерность экрана и начинаем работать
+  // start lcd
   lcd.begin(16, 4);
     lcd.print("P: "); 
   lcd.setCursor(0, 1);
- 
-  // Пишем вторую строку
+
   lcd.print("B: "); 
   // initialize the pushbutton pin as an input:
   //pinMode(buttonPin, INPUT);   
@@ -137,6 +157,46 @@ void setup()
   //init button timer
   ButtonTimer.nocallback = buttonModeStateTransition;
   ButtonTimer.callback = NULL;  
+}
+
+void setSerialMode (byte controlPin, boolean devMode)
+{
+  digitalWrite(controlPin, devMode);
+}
+
+byte calcDelay(byte len, unsigned int speed)
+{
+   return ceil(8*len/(speed/1000.));
+}
+
+
+void recvSerialData(void* arg)
+{
+   struct _rs485 * rs485 = (struct _rs485 *)arg;
+   rs485->mode = RS485_MODE_TX;
+   setSerialMode (rs485->controlPin, RS485_MODE_TX);
+   if (rs485->serial.available())
+     {
+       rs485->recvbuf[rs485->recvd] = rs485->serail.read();
+       rs485->recvd++;
+     }
+   if (rs485->recvd == MAX_LEN_MSG)
+     rs485->recvd = 0;
+}
+
+void sendSerialData(void* arg)
+{
+  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  if (rs485->sent <= rs485->cmdlen)
+    {
+      rs485->serial.write(rs485->sendbuf[rs485->sent]);
+      delay(calDelay(1, rs485->baudrate));
+      rs485->sent++;
+    }
+  else
+    {
+      rs485->sent = 0;
+    }
 }
 
 void printButtonMode(struct _button * mbutton)
@@ -301,16 +361,6 @@ byte readMsg(HardwareSerial serial, byte* buffer)
         }
     }
     return len;
-}
-
-byte calcDelay(byte len, int speed)
-{
-   return ceil(8*len/(speed/1000.));
-}
-
-void setDevMode(byte pin, byte devMode)
-{
-  digitalWrite(pin, devMode);
 }
 
 void checkTimer (struct timer* Timer, void* arg)
