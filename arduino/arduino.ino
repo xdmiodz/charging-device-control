@@ -3,20 +3,9 @@
 
 int referenceVal = 500;
 
-#define MAX_MSG_LEN (128)
-
-byte reply[MAX_MSG_LEN] = {0};
-byte replylen = 0;
-
-#define SERIAL_SPEED 9600 
-#define RESPONSE_TIMEOUT  500 //in ms
-
-#define DEV_MODE_TX HIGH
-#define DEV_MODE_RX LOW
 #define PfeiferSerial Serial2
-#define PfeiferControlPin 36
-
-
+#define PfeiferSerialControlPin 36
+#define PfeiferSerialBaudrate 9600
 
 struct timer 
 {
@@ -80,7 +69,7 @@ struct _button
 
 struct _rs485
 {
-#define MAX_LEN_MSG 128
+#define MAX_LEN_MSG (128)
   unsigned byte sent;
   char sendbuf[MAX_LEN_MSG];
   unsigned byte recvd;
@@ -89,8 +78,8 @@ struct _rs485
 
   unsigned byte cmdlen;
 
-  /*number of printed bytes*/
-  unsigned byte printd;
+  /*set if info is already up to date*/
+  boolean updateInfo;
   
 #define RS485_MODE_TX HIGH
 #define RS485_MODE_RX LOW  
@@ -98,7 +87,10 @@ struct _rs485
   byte controlPin;
   
   HardwareSerial* serial;
+  LiquidCrystal *lcd;
 };
+
+struct _rs485 rs485Pfeifer; 
 
 // set contol pins for lcd
 LiquidCrystal lcd(32, 22, 24, 26, 28, 30);
@@ -111,19 +103,6 @@ void setup()
   lcd.setCursor(0, 1);
 
   lcd.print("B: "); 
-  // initialize the pushbutton pin as an input:
-  //pinMode(buttonPin, INPUT);   
-  
-  //Set Serial for pfeifer device
-  pinMode(PfeiferControlPin, OUTPUT); 
-  PfeiferSerial.begin(SERIAL_SPEED);
-  setDevMode(PfeiferControlPin, DEV_MODE_RX);
-  
-  //init timer for Pfeifer Device
-  PfeiferTimer.startTime = millis();
-  PfeiferTimer.periodTime = 1000;
-  PfeiferTimer.callback = updatePfeifer;
-  PfeiferTimer.nocallback = NULL;
   
   //init values for magnetic field varistor
   mfieldvals.currentField = 0;
@@ -157,36 +136,86 @@ void setup()
   //init button timer
   ButtonTimer.nocallback = buttonModeStateTransition;
   ButtonTimer.callback = NULL;  
+
+  //init pfeifer serial control
+  rs485Pfeifer.sent = 0;
+  rs485Pfeifer.recvd = 0;
+  rs485Pfeifer.cmdlen = 0;
+  rs485Pfeifer.baudrate = PfeiferSerialBaudrate;
+  rs485Pfeifer.controlPin = PfeiferSerialControlPin;
+  rs485Pfeifer.serial = &PfeiferSerial;
+  rs485Pfeifer.lcd = &lcd;
+  PfeiferSerial.begin(PfeiferSerialBaudrate);
+  setSerialCmd ("PRI?\r\n", &rs485Pfeifer);
+
+  pinMode(rs485Pfeifer.controlPin, OUTPUT); 
+  setSerialMode (rs485Pfeifer.controlPin, RS485_MODE_RX);
+
+  //init timer for Pfeifer Device
+  PfeiferTimer.startTime = millis();
+  PfeiferTimer.periodTime = 5000;
+  PfeiferTimer.callback = updatePfeiferInfo;
+  PfeiferTimer.nocallback = checkPfeiferInfo;
 }
 
-void setSerialMode (byte controlPin, boolean devMode)
+
+void setSerialCmd (const char* cmd, struct _rs485 * rs485)
 {
-  digitalWrite(controlPin, devMode);
+  rs485->cmdlen = strlen(cmd);
+  strncpy ((const char*)rs485->sendbuf, cmd,  rs485->cmdlen);
+}
+
+void setSerialMode (struct _rs485* rs485, boolean devMode)
+{
+  digitalWrite(rs485->controlPin, devMode);
+  rs485->mode = devMode;
 }
 
 byte calcDelay(byte len, unsigned int speed)
 {
-   return ceil(8*len/(speed/1000.));
+  return ceil(8*len/(speed/1000.));
 }
 
 
-void recvSerialData(void* arg)
+void recvSerialData(struct _rs485 * rs485)
 {
-   struct _rs485 * rs485 = (struct _rs485 *)arg;
-   rs485->mode = RS485_MODE_TX;
-   setSerialMode (rs485->controlPin, RS485_MODE_TX);
-   if (rs485->serial.available())
-     {
-       rs485->recvbuf[rs485->recvd] = rs485->serail.read();
-       rs485->recvd++;
-     }
-   if (rs485->recvd == MAX_LEN_MSG)
-     rs485->recvd = 0;
+
+  if (rs485->updateInfo)
+    {
+      /*Received info is not updated, so I'm not going to receive more */
+      rs485->serial.flush();
+      return;
+    }
+
+  setSerialMode (rs485->controlPin, RS485_MODE_TX);
+  if (rs485->serial.available())
+    {
+      rs485->recvbuf[rs485->recvd] = rs485->serial.read();
+      
+      /*Wow! We have a reply!*/
+      if (rs485->recvbuf[rs485->recvd] == byte ('\n') && 
+	  (rs485->recvd > 0 && rs485->recvbuf[rs485->recvd - 1] == byte ('\r')))
+	{
+	  rs485->updateInfo = TRUE;
+	}
+
+      rs485->recvd++;
+    }
+  if (rs485->recvd == MAX_LEN_MSG)
+    rs485->recvd = 0;
+
+  
+  setSerialMode (rs485->controlPin, RS485_MODE_RX);
 }
 
-void sendSerialData(void* arg)
+void sendSerialData(struct _rs485 * rs485)
 {
-  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  if (rs485->updateInfo)
+    return;
+
+  if (rs485->cmdlen == 0)
+    return;
+
   if (rs485->sent <= rs485->cmdlen)
     {
       rs485->serial.write(rs485->sendbuf[rs485->sent]);
@@ -201,15 +230,15 @@ void sendSerialData(void* arg)
 
 void printButtonMode(struct _button * mbutton)
 {
-    struct _mfieldvals * mfv = mbutton->mcontrol;
-    mfv->lcd->setCursor (14,1);
-    if (BUTTON_MODE_FINE == mbutton->buttonMode)
+  struct _mfieldvals * mfv = mbutton->mcontrol;
+  mfv->lcd->setCursor (14,1);
+  if (BUTTON_MODE_FINE == mbutton->buttonMode)
     {
       mfv->lcd->print (char(0x5E));
       mfv->lcd->print (char(0x5E));
       return;
     }
-    if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+  if (BUTTON_MODE_COARSE == mbutton->buttonMode)
     {
       mfv->lcd->print (" ");
       mfv->lcd->print (char(0x5E));
@@ -219,52 +248,52 @@ void printButtonMode(struct _button * mbutton)
 
 void setCoarseMode (struct _button * mbutton)
 {
-   struct _mfieldvals * mfv = mbutton->mcontrol;
-   mbutton->buttonMode = BUTTON_MODE_COARSE;   
-
-   mfv->rawCorrection = 0.;
-   float x = mfv->accumulatedRawCurrent/1024.;
-   if ((x > 0) && (x < 1))
-   {
-        mfv->a = (1/x/(x-1))*(mfv->currentField - MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
-   }
-   else
-       mfv->a = 0;
-       
-   mfv->b = (MAX_VOLTAGE - MIN_VOLTAGE) - mfv->a;
-   mfv->c = MIN_VOLTAGE;
-   
-   printButtonMode(mbutton);
+  struct _mfieldvals * mfv = mbutton->mcontrol;
+  mbutton->buttonMode = BUTTON_MODE_COARSE;   
+  
+  mfv->rawCorrection = 0.;
+  float x = mfv->accumulatedRawCurrent/1024.;
+  if ((x > 0) && (x < 1))
+    {
+      mfv->a = (1/x/(x-1))*(mfv->currentField - MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
+    }
+  else
+    mfv->a = 0;
+  
+  mfv->b = (MAX_VOLTAGE - MIN_VOLTAGE) - mfv->a;
+  mfv->c = MIN_VOLTAGE;
+  
+  printButtonMode(mbutton);
 }
 
 void setFineMode (struct _button * mbutton)
 {
-   struct _mfieldvals * mfv = mbutton->mcontrol;
-   mbutton->buttonMode = BUTTON_MODE_FINE;
-   long currentField = mfv->currentField;
-   mfv->minval = (currentField / 100)*100;
-   mfv->maxval =  mfv->minval + 100;
-   long k2 = (mfv->maxval -  mfv->minval);
-   long b2 = mfv->minval;
-   
-   mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + b2 - currentField)/k2;   
-   
-   mfv->a = 0;    
-   mfv->b = k2;
-   mfv->c = b2;
-   
+  struct _mfieldvals * mfv = mbutton->mcontrol;
+  mbutton->buttonMode = BUTTON_MODE_FINE;
+  long currentField = mfv->currentField;
+  mfv->minval = (currentField / 100)*100;
+  mfv->maxval =  mfv->minval + 100;
+  long k2 = (mfv->maxval -  mfv->minval);
+  long b2 = mfv->minval;
+  
+  mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + b2 - currentField)/k2;   
+  
+  mfv->a = 0;    
+  mfv->b = k2;
+  mfv->c = b2;
+  
   printButtonMode(mbutton);
-   
+  
 }
 
 void changeButtonMode (struct _button * mbutton)
 {
-   if (BUTTON_MODE_COARSE == mbutton->buttonMode)
-   {
-     setFineMode (mbutton);
-     return;
+  if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+    {
+      setFineMode (mbutton);
+      return;
     }
-    if (BUTTON_MODE_FINE == mbutton->buttonMode)
+  if (BUTTON_MODE_FINE == mbutton->buttonMode)
     {
       setCoarseMode (mbutton);
       return;
@@ -348,21 +377,6 @@ void accumulateAnalogRead(void* arg)
    mfv->counts++;
 }
 
-byte readMsg(HardwareSerial serial, byte* buffer)
-{  
-    unsigned long startt = millis();
-    byte len = 0;
-    while ((len < MAX_MSG_LEN) && ((millis() - startt) < RESPONSE_TIMEOUT))
-    {
-        if (serial.available())
-        {
-            buffer[len] = serial.read();
-            len++;
-        }
-    }
-    return len;
-}
-
 void checkTimer (struct timer* Timer, void* arg)
 {
   if (Timer->callback)
@@ -379,36 +393,28 @@ void checkTimer (struct timer* Timer, void* arg)
     Timer->nocallback (arg);
 }
 
-void updatePfeifer(void *arg)
+void checkPfeiferInfo(void *arg)
 {
-  //PfeiferSerial.flush();
-   //delay(5);
-   setDevMode(PfeiferControlPin, DEV_MODE_TX);
-   
-   //PfeiferSerial.println("MOD?");
-   PfeiferSerial.write((byte('M')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   PfeiferSerial.write((byte('O')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   PfeiferSerial.write((byte('D')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   PfeiferSerial.write((byte('?')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   PfeiferSerial.write((byte('\r')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   PfeiferSerial.write((byte('\n')));
-   delay(calcDelay(1, SERIAL_SPEED));
-   //delay(50);
-   setDevMode(PfeiferControlPin, DEV_MODE_RX); 
-   if ((replylen = readMsg(PfeiferSerial, reply)) > 0)
-   { 
-     printEmptyLine(&lcd,3, 0, 13);
-     lcd.setCursor(3, 0);
-    // lcd.print("W");
-     lcd.print((const char*)reply);
-   }
+  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  sendSerialData (rs485);
+  recvSerialData (rs485);
 }
 
+void updatePfeiferInfo (void *arg)
+{
+  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  if (rs485->updateInfo && rs4850->recvd > 2)
+    {
+      unsigned byte i = 0;
+      rs485->updateInfo = FALSE;
+      printEmptyLine (rs485->lcd, 3, 0, 14);
+      rs485->lcd->setCursor(3,0);
+      for (i = 0; i < rs485->recvd - 2; ++i)
+	rs485->lcd->write(rs485->recvbuf[i]);
+      rs485->recvd = 0;
+      rs485->sent = 0;
+    }
+}
 
  
 void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine, byte maxLen)
@@ -429,7 +435,7 @@ int readVoltage()
 
 void loop()
 { 
-  //checkTimer (&PfeiferTimer, NULL);
+  checkTimer (&PfeiferTimer, &rs485Pfeifer);
   checkTimer (&MFieldTimer, &mfieldvals);
   checkTimer (&ButtonTimer, &button);
 }
