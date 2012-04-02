@@ -70,13 +70,13 @@ struct _button
 struct _rs485
 {
 #define MAX_LEN_MSG (128)
-  unsigned byte sent;
+  byte sent;
   char sendbuf[MAX_LEN_MSG];
-  unsigned byte recvd;
+  byte recvd;
   char recvbuf[MAX_LEN_MSG];
   unsigned int baudrate;
 
-  unsigned byte cmdlen;
+  byte cmdlen;
 
   /*set if info is already up to date*/
   boolean updateInfo;
@@ -149,7 +149,7 @@ void setup()
   setSerialCmd ("PRI?\r\n", &rs485Pfeifer);
 
   pinMode(rs485Pfeifer.controlPin, OUTPUT); 
-  setSerialMode (rs485Pfeifer.controlPin, RS485_MODE_RX);
+  setSerialMode (&rs485Pfeifer, RS485_MODE_RX);
 
   //init timer for Pfeifer Device
   PfeiferTimer.startTime = millis();
@@ -162,7 +162,7 @@ void setup()
 void setSerialCmd (const char* cmd, struct _rs485 * rs485)
 {
   rs485->cmdlen = strlen(cmd);
-  strncpy ((const char*)rs485->sendbuf, cmd,  rs485->cmdlen);
+  strncpy ((char*)rs485->sendbuf, cmd,  rs485->cmdlen);
 }
 
 void setSerialMode (struct _rs485* rs485, boolean devMode)
@@ -183,20 +183,20 @@ void recvSerialData(struct _rs485 * rs485)
   if (rs485->updateInfo)
     {
       /*Received info is not updated, so I'm not going to receive more */
-      rs485->serial.flush();
+      rs485->serial->flush();
       return;
     }
 
-  setSerialMode (rs485->controlPin, RS485_MODE_TX);
-  if (rs485->serial.available())
+  setSerialMode (rs485, RS485_MODE_TX);
+  if (rs485->serial->available())
     {
-      rs485->recvbuf[rs485->recvd] = rs485->serial.read();
+      rs485->recvbuf[rs485->recvd] = rs485->serial->read();
       
       /*Wow! We have a reply!*/
       if (rs485->recvbuf[rs485->recvd] == byte ('\n') && 
 	  (rs485->recvd > 0 && rs485->recvbuf[rs485->recvd - 1] == byte ('\r')))
 	{
-	  rs485->updateInfo = TRUE;
+	  rs485->updateInfo = 1;
 	}
 
       rs485->recvd++;
@@ -205,7 +205,7 @@ void recvSerialData(struct _rs485 * rs485)
     rs485->recvd = 0;
 
   
-  setSerialMode (rs485->controlPin, RS485_MODE_RX);
+  setSerialMode (rs485, RS485_MODE_RX);
 }
 
 void sendSerialData(struct _rs485 * rs485)
@@ -218,8 +218,8 @@ void sendSerialData(struct _rs485 * rs485)
 
   if (rs485->sent < rs485->cmdlen)
     {
-      rs485->serial.write(rs485->sendbuf[rs485->sent]);
-      delay(calDelay(1, rs485->baudrate));
+      rs485->serial->write(rs485->sendbuf[rs485->sent]);
+      delay(calcDelay(1, rs485->baudrate));
       rs485->sent++;
     }
   else
@@ -403,10 +403,10 @@ void checkPfeiferInfo(void *arg)
 void updatePfeiferInfo (void *arg)
 {
   struct _rs485 * rs485 = (struct _rs485 *)arg;
-  if (rs485->updateInfo && rs4850->recvd > 2)
+  if (rs485->updateInfo && rs485->recvd > 2)
     {
-      unsigned byte i = 0;
-      rs485->updateInfo = FALSE;
+      byte i = 0;
+      rs485->updateInfo = 0;
       printEmptyLine (rs485->lcd, 3, 0, 14);
       rs485->lcd->setCursor(3,0);
       for (i = 0; i < rs485->recvd - 2; ++i)
