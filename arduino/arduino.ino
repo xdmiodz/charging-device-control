@@ -3,8 +3,8 @@
 
 int referenceVal = 500;
 
-#define PfeiferSerial Serial2
-#define PfeiferSerialControlPin 36
+#define PfeiferSerial Serial3
+#define PfeiferSerialControlPin 38
 #define PfeiferSerialBaudrate 9600
 
 struct timer 
@@ -81,6 +81,9 @@ struct _rs485
   /*set if info is already up to date*/
   boolean updateInfo;
   
+  /**/
+  boolean transmitEnabled;
+  
 #define RS485_MODE_TX HIGH
 #define RS485_MODE_RX LOW  
   boolean mode;
@@ -145,6 +148,7 @@ void setup()
   rs485Pfeifer.controlPin = PfeiferSerialControlPin;
   rs485Pfeifer.serial = &PfeiferSerial;
   rs485Pfeifer.lcd = &lcd;
+  rs485Pfeifer.transmitEnabled = 0;
   PfeiferSerial.begin(PfeiferSerialBaudrate);
   setSerialCmd ("PRI?\r\n", &rs485Pfeifer);
 
@@ -179,7 +183,6 @@ byte calcDelay(byte len, unsigned int speed)
 
 void recvSerialData(struct _rs485 * rs485)
 {
-
   if (rs485->updateInfo)
     {
       /*Received info is not updated, so I'm not going to receive more */
@@ -187,7 +190,6 @@ void recvSerialData(struct _rs485 * rs485)
       return;
     }
 
-  setSerialMode (rs485, RS485_MODE_TX);
   if (rs485->serial->available())
     {
       rs485->recvbuf[rs485->recvd] = rs485->serial->read();
@@ -203,13 +205,12 @@ void recvSerialData(struct _rs485 * rs485)
     }
   if (rs485->recvd == MAX_LEN_MSG)
     rs485->recvd = 0;
-
-  
-  setSerialMode (rs485, RS485_MODE_RX);
 }
 
 void sendSerialData(struct _rs485 * rs485)
 {
+  if (!rs485->transmitEnabled)
+    return;
   if (rs485->updateInfo)
     return;
 
@@ -218,13 +219,16 @@ void sendSerialData(struct _rs485 * rs485)
 
   if (rs485->sent < rs485->cmdlen)
     {
+      setSerialMode (rs485, RS485_MODE_TX);
       rs485->serial->write(rs485->sendbuf[rs485->sent]);
       delay(calcDelay(1, rs485->baudrate));
       rs485->sent++;
+      setSerialMode (rs485, RS485_MODE_RX);
     }
   else
     {
       rs485->sent = 0;
+      rs485->transmitEnabled = 0;
     }
 }
 
@@ -403,6 +407,7 @@ void checkPfeiferInfo(void *arg)
 void updatePfeiferInfo (void *arg)
 {
   struct _rs485 * rs485 = (struct _rs485 *)arg;
+  rs485->transmitEnabled = 1;
   if (rs485->updateInfo && rs485->recvd > 2)
     {
       byte i = 0;
