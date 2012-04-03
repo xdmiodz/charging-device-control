@@ -77,6 +77,9 @@ struct _rs485
   unsigned int baudrate;
 
   byte cmdlen;
+  
+  /*function to check if received data is full response*/
+  boolean (*checkRecvd)(byte * data, byte len);
 
   /*set if info is already up to date*/
   boolean updateInfo;
@@ -149,6 +152,7 @@ void setup()
   rs485Pfeifer.serial = &PfeiferSerial;
   rs485Pfeifer.lcd = &lcd;
   rs485Pfeifer.transmitEnabled = 0;
+  rs485Pfeifer.checkRecvd = pfeiferCheckString;
   PfeiferSerial.begin(PfeiferSerialBaudrate);
   setSerialCmd ("PRI?\r\n", &rs485Pfeifer);
 
@@ -193,15 +197,16 @@ void recvSerialData(struct _rs485 * rs485)
   if (rs485->serial->available())
     {
       rs485->recvbuf[rs485->recvd] = rs485->serial->read();
+      rs485->recvd++;
       
       /*Wow! We have a reply!*/
-      if (rs485->recvbuf[rs485->recvd] == byte ('\n') && 
-	  (rs485->recvd > 0 && rs485->recvbuf[rs485->recvd - 1] == byte ('\r')))
+      if (rs485->checkRecvd && 
+	  rs485->checkRecvd((byte*)rs485->recvbuf, rs485->recvd))
 	{
 	  rs485->updateInfo = 1;
 	}
 
-      rs485->recvd++;
+
     }
   if (rs485->recvd == MAX_LEN_MSG)
     rs485->recvd = 0;
@@ -356,6 +361,14 @@ void buttonModeStateTransition (void* arg)
   
 }
 
+boolean pfeiferCheckString (byte * data, byte len)
+{
+  if ((len > 2) && (data[len-2] == byte('\r')) 
+      && (data[len-1] == byte('\n')))
+    return 1;
+  return 0;
+}
+
 void printMfieldResistorValue (void* arg)
 {
   struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
@@ -408,13 +421,13 @@ void updatePfeiferInfo (void *arg)
 {
   struct _rs485 * rs485 = (struct _rs485 *)arg;
   rs485->transmitEnabled = 1;
-  if (rs485->updateInfo && rs485->recvd > 2)
+  if (rs485->updateInfo && rs485->recvd > 7)
     {
       byte i = 0;
       rs485->updateInfo = 0;
       printEmptyLine (rs485->lcd, 3, 0, 14);
       rs485->lcd->setCursor(3,0);
-      for (i = 0; i < rs485->recvd - 2; ++i)
+      for (i = 5; i < rs485->recvd - 2; ++i)
 	rs485->lcd->write(rs485->recvbuf[i]);
       rs485->recvd = 0;
       rs485->sent = 0;
