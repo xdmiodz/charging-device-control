@@ -1,11 +1,18 @@
 #include <LiquidCrystal.h>
 #define FIELD_SENSOR A0    // select the input pin for the potentiometer
 
-int referenceVal = 500;
-
 #define PfeiferSerial Serial3
 #define PfeiferSerialControlPin 38
 #define PfeiferSerialBaudrate 9600
+
+#define ChargerSerial Serial2
+#define ChargerSerialControlPin 36
+#define ChargerSerialBaudrate 9600
+
+
+/*Global defines*/
+#define TRUE     1
+#define FALSE    0
 
 struct timer 
 {
@@ -23,6 +30,9 @@ struct timer MFieldTimer;
 
 //timer structure for Button
 struct timer ButtonTimer;
+
+//timer for Charger Device
+struct timer ChargerTimer;
 
 struct _mfieldvals
 {
@@ -96,7 +106,18 @@ struct _rs485
   LiquidCrystal *lcd;
 };
 
+struct _chargerControl
+{
+  LiquidCrystal * lcd;
+  struct _rs485 * rs485;
+  struct _mfieldvals * mcontrol;
+} chargerControl;
+
+/*RS485 device for Pfeifer RVC300*/
 struct _rs485 rs485Pfeifer; 
+
+/*RS485 device for Charger Device*/
+struct _rs485 rs485Charger;
 
 // set contol pins for lcd
 LiquidCrystal lcd(32, 22, 24, 26, 28, 30);
@@ -164,14 +185,83 @@ void setup()
   PfeiferTimer.periodTime = 5000;
   PfeiferTimer.callback = updatePfeiferInfo;
   PfeiferTimer.nocallback = checkPfeiferInfo;
+
+
+  //init pfeifer serial control
+  rs485Charger.sent = 0;
+  rs485Charger.recvd = 0;
+  rs485Charger.cmdlen = 0;
+  rs485Charger.baudrate = ChargerSerialBaudrate;
+  rs485Charger.controlPin = ChargerSerialControlPin;
+  rs485Charger.serial = &ChargerSerial;
+  rs485Charger.lcd = &lcd;
+  rs485Charger.transmitEnabled = 0;
+  rs485Charger.checkRecvd = chargerCheckReply;
+  ChargerSerial.begin(ChargerSerialBaudrate);
+  setSerialCmdStr ("PRI?\r\n", &rs485Charger);
+
+  pinMode(rs485Charger.controlPin, OUTPUT); 
+  setSerialMode (&rs485Charger, RS485_MODE_RX);
+
+  //init timer for Pfeifer Device
+  ChargerTimer.startTime = millis();
+  ChargerTimer.periodTime = 1000;
+  ChargerTimer.callback = updateChargerInfo;
+  ChargerTimer.nocallback = checkChargerInfo;
+
+  //init charger control
+  chargerControl.lcd = &lcd;
+  chargercontrol.rs485 = &rs485Charger;
+  chargerControl.mcontrol = button;
 }
 
 
-void setSerialCmd (const char* cmd, struct _rs485 * rs485)
+byte checksum(const byte * cmd, byte len)
+{
+  byte chk = 0;
+  byte i;
+  for (i = 0; i < len; ++i)
+    {
+      chk ^= cmd[i];
+    }
+  return ~chk;
+}
+
+void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
+		      byte len)
+{
+  rs485->cmdlen = len;
+  memcpy((void*)rs485->sendbuf, (void*)cmd, len);
+}
+
+/*set cmd for updating info from Charger Device*/
+void setChargerVoltage(struct _rs485 * charger, unsigned int voltage)
+{
+  if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
+    return;
+  
+  float fVolt = float(voltage)/100.;
+  byte * pbVolt = &fVolt;
+  byte cmd[7] = {0};
+  
+  cmd[0] = 1;
+  cmd[1] = byte('F');
+  cmd[2] = pbVolt[0];
+  cmd[3] = pbVolt[1];
+  cmd[4] = pbVolt[2];
+  cmd[5] = pbVolt[3];
+  cmd[6] = checksum(cmd, 6);
+  setSerialCmdBin (charger, cmd, 7);
+  return;
+}
+
+void setSerialCmdStr (const char* cmd, struct _rs485 * rs485)
 {
   rs485->cmdlen = strlen(cmd);
   strncpy ((char*)rs485->sendbuf, cmd,  rs485->cmdlen);
 }
+
+
 
 void setSerialMode (struct _rs485* rs485, boolean devMode)
 {
@@ -369,6 +459,15 @@ boolean pfeiferCheckString (byte * data, byte len)
   return 0;
 }
 
+boolean chargerCheckReply (const byte * data, byte len)
+{
+  if (data[0] != 1)
+    return 0;
+  if (data[len - 1] != checksum(data, len))
+    return 0;
+  return 1;
+}
+
 void printMfieldResistorValue (void* arg)
 {
   struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
@@ -394,7 +493,7 @@ void accumulateAnalogRead(void* arg)
    mfv->counts++;
 }
 
-void checkTimer (struct timer* Timer, void* arg)
+void checkTimer (struct timer* Timer, void * arg)
 {
   if (Timer->callback)
   {
@@ -417,6 +516,12 @@ void checkPfeiferInfo(void *arg)
   recvSerialData (rs485);
 }
 
+void updateChargerInfo(void * arg)
+{
+  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  
+}
+
 void updatePfeiferInfo (void *arg)
 {
   struct _rs485 * rs485 = (struct _rs485 *)arg;
@@ -435,7 +540,8 @@ void updatePfeiferInfo (void *arg)
 }
 
  
-void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine, byte maxLen)
+void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine, 
+		    byte maxLen)
 {
    byte i;
    lcd->setCursor(startPos, startLine);
