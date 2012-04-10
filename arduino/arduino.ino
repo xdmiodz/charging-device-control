@@ -61,6 +61,7 @@ struct _button
 {
 #define BUTTON_MODE_COARSE 0
 #define BUTTON_MODE_FINE   1
+#define BUTTON_MODE_SET    2
   byte buttonMode;
 
 #define BUTTON_STATE_ON     HIGH
@@ -73,7 +74,6 @@ struct _button
   unsigned long pushUp; //time of recent push up  
   
   byte previousState;
-  struct _mfieldvals * mcontrol;
   
 } button;
 
@@ -108,10 +108,29 @@ struct _rs485
 
 struct _chargerControl
 {
-  LiquidCrystal * lcd;
   struct _rs485 * rs485;
-  struct _mfieldvals * mcontrol;
+  
+  #define CHARGER_GET_VOLTAGE  0
+  #define CHARGER_SET_VOLTAGE  1
+  byte status;
+  
+  /*current voltage on the device*/
+  unsigned int voltage;
 } chargerControl;
+
+struct _mfieldcontrol
+{
+  struct _chargerControl * charger;
+  struct _button * button;
+  struct _mfieldvals * mvals;
+} mfieldcontrol;
+
+struct _lcdControl
+{
+  LiquidCrystal * lcd;
+  struct _button * button;
+  
+} lcdControl;
 
 /*RS485 device for Pfeifer RVC300*/
 struct _rs485 rs485Pfeifer; 
@@ -212,7 +231,8 @@ void setup()
   //init charger control
   chargerControl.lcd = &lcd;
   chargercontrol.rs485 = &rs485Charger;
-  chargerControl.mcontrol = button;
+  chargerControl.mcontrol = &mfieldvals;
+  chargerControl.status = CHARGER_READ_VOLTAGE;
 }
 
 
@@ -234,7 +254,7 @@ void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
   memcpy((void*)rs485->sendbuf, (void*)cmd, len);
 }
 
-/*set cmd for updating info from Charger Device*/
+/*set cmd for setting info to Charger Device*/
 void setChargerVoltage(struct _rs485 * charger, unsigned int voltage)
 {
   if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
@@ -254,6 +274,20 @@ void setChargerVoltage(struct _rs485 * charger, unsigned int voltage)
   setSerialCmdBin (charger, cmd, 7);
   return;
 }
+
+/*set cmd for updating info from Charger Device*/
+void getChargerVoltage(struct _rs485 * charger)
+{
+  byte cmd[4] = {0};
+  
+  cmd[0] = 1;
+  cmd[1] = byte('B');
+  cmd[2] = 0;
+  cmd[3] = checksum(cmd, 3);
+  setSerialCmdBin (charger, cmd, 4);
+  return;
+}
+
 
 void setSerialCmdStr (const char* cmd, struct _rs485 * rs485)
 {
@@ -387,8 +421,9 @@ void setFineMode (struct _button * mbutton)
 
 void changeButtonMode (struct _button * mbutton)
 {
-  if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+  if (BUTTON_MODE_COARSE == mode)
     {
+      mbutton->button
       setFineMode (mbutton);
       return;
     }
@@ -403,9 +438,6 @@ void buttonModeStateTransition (void* arg)
 {
   struct _button * mbutton = (struct _button *)arg;
   byte state = digitalRead(mbutton->buttonPin);
-  struct _mfieldvals * mfv = mbutton->mcontrol;
-  
-  printButtonMode(mbutton);
   
   if (BUTTON_STATE_ON == state && BUTTON_STATE_OFF == mbutton->previousState)
   {
@@ -430,8 +462,8 @@ void buttonModeStateTransition (void* arg)
      }
      else
      {
-         //long click;
-        return;
+       mbutton->buttonMode = BUTTON_MODE_SET;
+       return;
      }
      return;
   }
@@ -463,9 +495,19 @@ boolean chargerCheckReply (const byte * data, byte len)
 {
   if (data[0] != 1)
     return 0;
-  if (data[len - 1] != checksum(data, len))
+  if (len > 1)
+    {
+      byte msg_len = data[1] + 2;
+      if (len == msg_len)
+	if (data[len - 1] == checksum(data, len))
+	  return 1;
+	else
+	  return 0;
+      else
+	return 0;
+    }
+  else
     return 0;
-  return 1;
 }
 
 void printMfieldResistorValue (void* arg)
@@ -516,11 +558,49 @@ void checkPfeiferInfo(void *arg)
   recvSerialData (rs485);
 }
 
+
+
 void updateChargerInfo(void * arg)
 {
-  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  struct _rs485 * chargerControl = (struct _chargerControl *)arg;
+  struct _rs485 * rs485 = chargerControl->rs485;
+
+  rs485->transmitEnabled = 1;
   
+  if (rs485->updateInfo == 0)
+    return;
+
+  rs485->recvd = 0;
+  rs485->sent = 0;
+
+  if (CHARGER_GET_VOLTAGE == chargerControl->status)
+    {
+      if (byte('B') == rs485->recvbuf[2])
+	{
+	  float * recvvoltage = &(rs485->recvbuf[4]);
+	  chargerControl->voltage = long((*recvvoltage)*100.);
+	  return;
+	} 
+      else
+	return;
+    }
+  if (CHARGER_SET_VOLTAGE == chargerControl->status)
+    {
+      setChargerVoltage(rs485, chargerControl->voltage);
+      chargerControl->status = CHARGER_GET_VOLTAGE;
+      return;
+    }
 }
+
+
+void checkChargerInfo(void * arg)
+{
+  struct _rs485 * chargerControl = (struct _chargerControl *)arg;
+  struct _rs485 * rs485 = chargerControl->rs485;
+  sendSerialData (rs485);
+  recvSerialData (rs485);
+}
+
 
 void updatePfeiferInfo (void *arg)
 {
@@ -550,15 +630,9 @@ void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine,
 }
 
 
-int readVoltage()
-{
-  return 500;
-}
-
-
-
 void loop()
 { 
+  checkTimer (&chargerTimer, &chargerControl);
   checkTimer (&PfeiferTimer, &rs485Pfeifer);
   checkTimer (&MFieldTimer, &mfieldvals);
   checkTimer (&ButtonTimer, &button);
