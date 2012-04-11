@@ -63,10 +63,12 @@ struct _button
 #define BUTTON_MODE_FINE   1
 #define BUTTON_MODE_SET    2
   byte buttonMode;
+  byte buttonPreviousMode;
 
 #define BUTTON_STATE_ON     HIGH
 #define BUTTON_STATE_OFF    LOW
   byte buttonState;
+
   
   byte buttonPin;
 #define BUTTON_MODE_CHANGE_TIMEOUT 2000
@@ -115,7 +117,7 @@ struct _chargerControl
   byte status;
   
   /*current voltage on the device*/
-  unsigned int voltage;
+  long voltage;
 } chargerControl;
 
 struct _mfieldcontrol
@@ -129,7 +131,7 @@ struct _lcdControl
 {
   LiquidCrystal * lcd;
   struct _button * button;
-  
+  struct _mfieldvals * mvals;
 } lcdControl;
 
 /*RS485 device for Pfeifer RVC300*/
@@ -166,7 +168,7 @@ void setup()
   //init timer for mfield varistor
   MFieldTimer.startTime = millis();
   MFieldTimer.periodTime = 100;
-  MFieldTimer.callback = printMfieldResistorValue;
+  MFieldTimer.callback = updateMfieldValue;
   MFieldTimer.nocallback = accumulateAnalogRead;
   
 
@@ -230,9 +232,14 @@ void setup()
 
   //init charger control
   chargerControl.lcd = &lcd;
-  chargercontrol.rs485 = &rs485Charger;
+  chargercontrol.charger = &rs485Charger;
   chargerControl.mcontrol = &mfieldvals;
   chargerControl.status = CHARGER_READ_VOLTAGE;
+
+  //init filed control
+  mfieldcontrol.charger = &rs485Charger;
+  mfieldcontrol.button = &button;
+  mfieldcontrol.mvals = &mfieldvals;
 }
 
 
@@ -255,7 +262,7 @@ void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
 }
 
 /*set cmd for setting info to Charger Device*/
-void setChargerVoltage(struct _rs485 * charger, unsigned int voltage)
+void setChargerVoltage(struct _rs485 * charger, long voltage)
 {
   if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
     return;
@@ -379,16 +386,18 @@ void printButtonMode(struct _button * mbutton)
     }
 }
 
-void setCoarseMode (struct _button * mbutton)
+void setCoarseMode (struct _button * mbutton, 
+		    struct _mfieldvals * mfv)
 {
-  struct _mfieldvals * mfv = mbutton->mcontrol;
   mbutton->buttonMode = BUTTON_MODE_COARSE;   
+  mbutton->buttonPreviousMode = BUTTON_MODE_FINE;   
   
   mfv->rawCorrection = 0.;
   float x = mfv->accumulatedRawCurrent/1024.;
   if ((x > 0) && (x < 1))
     {
-      mfv->a = (1/x/(x-1))*(mfv->currentField - MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
+      mfv->a = (1/x/(x-1))*(mfv->currentField - 
+			    MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
     }
   else
     mfv->a = 0;
@@ -399,17 +408,19 @@ void setCoarseMode (struct _button * mbutton)
   printButtonMode(mbutton);
 }
 
-void setFineMode (struct _button * mbutton)
+void setFineMode (struct _button * mbutton,
+		  struct _mfieldvals * mfv)
 {
-  struct _mfieldvals * mfv = mbutton->mcontrol;
   mbutton->buttonMode = BUTTON_MODE_FINE;
+  mbutton->buttonPreviousMode = BUTTON_MODE_COARSE;   
   long currentField = mfv->currentField;
   mfv->minval = (currentField / 100)*100;
   mfv->maxval =  mfv->minval + 100;
   long k2 = (mfv->maxval -  mfv->minval);
   long b2 = mfv->minval;
   
-  mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + b2 - currentField)/k2;   
+  mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + 
+			b2 - currentField)/k2;   
   
   mfv->a = 0;    
   mfv->b = k2;
@@ -419,34 +430,40 @@ void setFineMode (struct _button * mbutton)
   
 }
 
-void changeButtonMode (struct _button * mbutton)
+void changeButtonMode (struct _button * mbutton,
+		       struct _mfieldvals * mfv)
 {
   if (BUTTON_MODE_COARSE == mode)
     {
       mbutton->button
-      setFineMode (mbutton);
+	setFineMode (mbutton, mfv);
       return;
     }
   if (BUTTON_MODE_FINE == mbutton->buttonMode)
     {
-      setCoarseMode (mbutton);
+      setCoarseMode (mbutton, mfv);
       return;
     }
 }
 
-void buttonModeStateTransition (void* arg)
+void buttonModeStateTransition (struct _mbutton * mbutton,
+				struct _mfieldvals * mfv)
 {
-  struct _button * mbutton = (struct _button *)arg;
   byte state = digitalRead(mbutton->buttonPin);
   
-  if (BUTTON_STATE_ON == state && BUTTON_STATE_OFF == mbutton->previousState)
+  if (BUTTON_MODE_SET == mbutton->buttonMode)
+    return;
+  
+  if (BUTTON_STATE_ON == state && 
+      BUTTON_STATE_OFF == mbutton->previousState)
   {
      mbutton->previousState = BUTTON_STATE_ON;
      mbutton->pushDown = millis();
      return;
   }
   
-  if (BUTTON_STATE_OFF == state && BUTTON_STATE_ON == mbutton->previousState)
+  if (BUTTON_STATE_OFF == state && 
+      BUTTON_STATE_ON == mbutton->previousState)
   {
      mbutton->previousState = BUTTON_STATE_OFF;
      mbutton->pushUp = millis();
@@ -454,28 +471,34 @@ void buttonModeStateTransition (void* arg)
      if (mbutton->pushUp < mbutton->pushDown)
        return;
        
-     if ((mbutton->pushUp - mbutton->pushDown) < BUTTON_MODE_CHANGE_TIMEOUT)
+     if ((mbutton->pushUp - mbutton->pushDown) 
+	 < BUTTON_MODE_CHANGE_TIMEOUT)
      {
          //fast click
-         changeButtonMode(mbutton);
+       changeButtonMode(mbutton, mfv);
          return;
      }
      else
      {
+       /*fast click*/
+       mbutton->buttonPreviousMode = mbutton->buttonMode;
        mbutton->buttonMode = BUTTON_MODE_SET;
        return;
      }
      return;
   }
-  if (BUTTON_STATE_ON == state && BUTTON_STATE_ON == mbutton->previousState)
+  if (BUTTON_STATE_ON == state && 
+      BUTTON_STATE_ON == mbutton->previousState)
   {
     unsigned long currentTime = millis();
     if (currentTime < mbutton->pushDown)
       return;
      
-    if ((currentTime - mbutton->pushDown) < BUTTON_MODE_CHANGE_TIMEOUT)
+    if ((currentTime - mbutton->pushDown) 
+	< BUTTON_MODE_CHANGE_TIMEOUT)
     {
-      changeButtonMode(mbutton);
+      //fast click
+      changeButtonMode(mbutton, mfv);
       mbutton->pushDown = currentTime;
       return;
     }
@@ -510,29 +533,43 @@ boolean chargerCheckReply (const byte * data, byte len)
     return 0;
 }
 
-void printMfieldResistorValue (void* arg)
+void updateMfieldValue (void* arg)
 {
-  struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
-  mfv->accumulatedRawCurrent = ceil(mfv->accumulatedRaw/mfv->counts);
-  float x = mfv->accumulatedRawCurrent/1024. - mfv->rawCorrection;
-  long currentField = floor(mfv->a*x*x + mfv->b*x + mfv->c);
-  if (currentField != mfv->currentField)
-  {
-    printEmptyLine(mfv->lcd, 3, 1, 4);
-    mfv->lcd->setCursor(3, 1);
-    mfv->lcd->print(currentField); 
-    mfv->currentField = currentField; 
-  }
-  mfv->accumulatedRaw = 0;
-  mfv->counts = 0;
+  
+  struct _mfieldcontrol * mcontrol = (struct _mfieldcontrol *)arg;
+  struct _mfieldvals * mvals = mcontrol->mvals;
+  struct _button * mbutton = mcontrol->button;
+  struct _chargerControl * charger =  mcontrol->charger;
+
+  mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mfv->counts);
+  float x = mvals->accumulatedRawCurrent/1024. - mvals->rawCorrection;
+  long currentField = floor(mvals->a*x*x + mvals->b*x + mvals->c);
+  if (currentField != mvals->currentField)
+    mvals->currentField = currentField; 
+
+  mvals->accumulatedRaw = 0;
+  mvals->counts = 0;
+  
+  if (BUTTON_MODE_SET == mbutton->buttonMode)
+    {
+      mvals->setField = charger->voltage;
+      mbutton->buttonMode = mbuttonPrevoiusmode;
+    }
 }
 
 void accumulateAnalogRead(void* arg)
 {
-   struct _mfieldvals * mfv = (struct _mfieldvals *)arg;
+   struct _mfieldcontrol * mcontrol = (struct _mfieldcontrol *)arg;
+   struct _mfieldvals * mvals = mcontrol->mvals;
+   struct _button * mbutton = mcontrol->button;
    
-   mfv->accumulatedRaw += analogRead(mfv->sensorPin);
-   mfv->counts++;
+   /*update state of varistor*/
+   mvals->accumulatedRaw += analogRead(mvals->sensorPin);
+   mvals->counts++;
+   
+   /*update button state*/
+   buttonModeStateTransition (mbutton, mvals);
+   
 }
 
 void checkTimer (struct timer* Timer, void * arg)
@@ -634,6 +671,5 @@ void loop()
 { 
   checkTimer (&chargerTimer, &chargerControl);
   checkTimer (&PfeiferTimer, &rs485Pfeifer);
-  checkTimer (&MFieldTimer, &mfieldvals);
-  checkTimer (&ButtonTimer, &button);
+  checkTimer (&MFieldTimer, &mfieldcontrol);
 }
