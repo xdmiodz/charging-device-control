@@ -23,7 +23,7 @@ struct timer
 };
 
 //timer structure for Pfeifer
-struct timer PfeiferTimer;
+struct timer pfeiferTimer;
 
 //timer structure for AnalogInput
 struct timer MFieldTimer;
@@ -32,7 +32,7 @@ struct timer MFieldTimer;
 struct timer LCDTimer;
 
 //timer for Charger Device
-struct timer ChargerTimer;
+struct timer chargerTimer;
 
 struct _mfieldvals
 {
@@ -96,7 +96,7 @@ struct _rs485
   byte cmdlen;
   
   /*function to check if received data is full response*/
-  boolean (*checkRecvd)(byte * data, byte len);
+  boolean (*checkRecvd)(const byte * data, byte len);
 
   /*set if info is already up to date*/
   boolean updateInfo;
@@ -134,7 +134,7 @@ struct _mfieldcontrol
 
 struct _pfeiferControl
 {
-  struct _rs485 * pfeiferDevice;
+  struct _rs485 * rs485;
   char pressure[MAX_LEN_MSG];
   
 } pfeiferControl;
@@ -144,6 +144,7 @@ struct _lcdControl
   LiquidCrystal * lcd;
   struct _button * button;
   struct _mfieldvals * mvals;
+  struct _pfeiferControl * pfeiferControl;
 
   byte buttonMode;
   long setField;
@@ -193,7 +194,6 @@ void setup()
   button.buttonMode = BUTTON_MODE_COARSE;
   button.buttonState = BUTTON_STATE_OFF;
   button.buttonPin = BUTTON_PIN;
-  button.mcontrol = &mfieldvals;
   button.pushDown = millis();
   button.pushUp = button.pushDown;
   button.previousState = BUTTON_STATE_OFF;
@@ -211,18 +211,20 @@ void setup()
   rs485Pfeifer.transmitEnabled = 0;
   rs485Pfeifer.checkRecvd = pfeiferCheckString;
   PfeiferSerial.begin(PfeiferSerialBaudrate);
-  setSerialCmd ("PRI?\r\n", &rs485Pfeifer);
+  setSerialCmdStr ("PRI?\r\n", &rs485Pfeifer);
 
   pinMode(rs485Pfeifer.controlPin, OUTPUT); 
   setSerialMode (&rs485Pfeifer, RS485_MODE_RX);
 
-  //
+  /*init pfeifer control*/
+  pfeiferControl.rs485 = &rs485Pfeifer;
+  pfeiferControl.pressure[0] = '\0';
 
   //init timer for Pfeifer Device
-  PfeiferTimer.startTime = millis();
-  PfeiferTimer.periodTime = 5000;
-  PfeiferTimer.callback = updatePfeiferInfo;
-  PfeiferTimer.nocallback = checkPfeiferInfo;
+  pfeiferTimer.startTime = millis();
+  pfeiferTimer.periodTime = 5000;
+  pfeiferTimer.callback = updatePfeiferInfo;
+  pfeiferTimer.nocallback = checkPfeiferInfo;
 
 
   //init pfeifer serial control
@@ -236,25 +238,23 @@ void setup()
   rs485Charger.transmitEnabled = 0;
   rs485Charger.checkRecvd = chargerCheckReply;
   ChargerSerial.begin(ChargerSerialBaudrate);
-  setSerialCmdStr ("PRI?\r\n", &rs485Charger);
+  setChargerVoltage(&rs485Charger, MIN_VOLTAGE);
 
   pinMode(rs485Charger.controlPin, OUTPUT); 
   setSerialMode (&rs485Charger, RS485_MODE_RX);
 
   //init timer for Charger Device
-  ChargerTimer.startTime = millis();
-  ChargerTimer.periodTime = 1000;
-  ChargerTimer.callback = updateChargerInfo;
-  ChargerTimer.nocallback = checkChargerInfo;
+  chargerTimer.startTime = millis();
+  chargerTimer.periodTime = 1000;
+  chargerTimer.callback = updateChargerInfo;
+  chargerTimer.nocallback = checkChargerInfo;
 
   //init charger control
-  chargerControl.lcd = &lcd;
-  chargercontrol.charger = &rs485Charger;
-  chargerControl.mcontrol = &mfieldvals;
+  chargerControl.rs485 = &rs485Charger;
   chargerControl.status = CHARGER_GET_VOLTAGE;
 
   //init filed control
-  mfieldcontrol.charger = &rs485Charger;
+  mfieldcontrol.charger = &chargerControl;
   mfieldcontrol.button = &button;
   mfieldcontrol.mvals = &mfieldvals;
 
@@ -263,15 +263,15 @@ void setup()
   lcdControl.button = &button;
   lcdControl.mvals = &mfieldvals;
   lcdControl.buttonMode = button.buttonMode;
-  lcdControl.setField = mvals.setField;
-  lcdControl.varistorField = mvals.currentField;
+  lcdControl.setField = mfieldvals.setField;
+  lcdControl.varistorField = mfieldvals.currentField;
+  lcdControl.pfeiferControl = &pfeiferControl;
   
   /*lcd timer*/
   LCDTimer.startTime = millis();
   LCDTimer.periodTime = 1000;
   LCDTimer.callback = NULL;
-  LCDTimer.nocallbak = updateLCD;
-  
+  LCDTimer.nocallback = updateLCD;  
 }
 
 
@@ -299,8 +299,8 @@ void setChargerVoltage(struct _rs485 * charger, long voltage)
   if ((voltage < MIN_VOLTAGE) || (voltage > MAX_VOLTAGE))
     return;
   
-  float fVolt = float(voltage)/100.;
-  byte * pbVolt = &fVolt;
+  float fVolt = float(voltage)/1000.;
+  byte * pbVolt = (byte *)&fVolt;
   byte cmd[7] = {0};
   
   cmd[0] = 1;
@@ -369,7 +369,6 @@ void recvSerialData(struct _rs485 * rs485)
 	  rs485->updateInfo = 1;
 	}
 
-
     }
   if (rs485->recvd == MAX_LEN_MSG)
     rs485->recvd = 0;
@@ -437,30 +436,38 @@ void printCurrentField(LiquidCrystal * lcd, long val)
   lcd->print (val);
 }
 
+void printPressure(LiquidCrystal * lcd, char * val)
+{
+  lcd->setCursor (3,0);
+  lcd->print (val);
+}
+
 
 void updateLCD(void * arg)
 {
   struct _lcdControl * lcdControl = (struct _lcdControl *)arg;
   struct _button * mbutton = lcdControl->button;
   struct _mfieldvals * mvals = lcdControl->mvals;
+  struct _pfeiferControl * pfeifer = lcdControl->pfeiferControl;
   LiquidCrystal * lcd = lcdControl->lcd;
   
-  if (button->buttonStateUpdate)
+  if (mbutton->buttonStateUpdate)
+  {
     printButtonMode (lcd, mbutton);
-  
+    mbutton->buttonStateUpdate = FALSE;
+  }  
   if (mvals->setField != lcdControl->setField)
     {
       lcdControl->setField = mvals->setField; 
-      printSetField(lcd, val);
+      printSetField(lcd, lcdControl->setField);
     }
 
   if (mvals->currentField != lcdControl->varistorField)
     {
       lcdControl->varistorField = mvals->currentField;
-      printSetField(lcd, lcdControl->varistorField);
+      printCurrentField(lcd, lcdControl->varistorField);
     }
-  
-  
+  printPressure(lcd, pfeifer->pressure);
 }
 
 void setCoarseMode (struct _button * mbutton, 
@@ -468,7 +475,7 @@ void setCoarseMode (struct _button * mbutton,
 {
   mbutton->buttonMode = BUTTON_MODE_COARSE;   
   mbutton->buttonPreviousMode = BUTTON_MODE_FINE;   
-  mbutton.buttonStateUpdate = TRUE;
+  mbutton->buttonStateUpdate = TRUE;
   
   mfv->rawCorrection = 0.;
   float x = mfv->accumulatedRawCurrent/1024.;
@@ -487,7 +494,7 @@ void setCoarseMode (struct _button * mbutton,
 void setFineMode (struct _button * mbutton,
 		  struct _mfieldvals * mfv)
 {
-  mbutton.buttonStateUpdate = TRUE;
+  mbutton->buttonStateUpdate = TRUE;
   mbutton->buttonMode = BUTTON_MODE_FINE;
   mbutton->buttonPreviousMode = BUTTON_MODE_COARSE;   
   
@@ -509,7 +516,7 @@ void setFineMode (struct _button * mbutton,
 void changeButtonMode (struct _button * mbutton,
 		       struct _mfieldvals * mfv)
 {
-  if (BUTTON_MODE_COARSE == mode)
+  if (BUTTON_MODE_COARSE == mbutton->buttonMode)
     {
       setFineMode (mbutton, mfv);
       return;
@@ -521,14 +528,15 @@ void changeButtonMode (struct _button * mbutton,
     }
 }
 
-void buttonModeStateTransition (struct _mbutton * mbutton,
+void buttonModeStateTransition (struct _button * mbutton,
 				struct _mfieldvals * mfv)
 {
   byte state = digitalRead(mbutton->buttonPin);
   
   if (BUTTON_MODE_SET == mbutton->buttonMode)
     return;
-  
+  if  (mbutton->buttonEnabled == BUTTON_BLOCKED)
+    return;
   if (BUTTON_STATE_ON == state && 
       BUTTON_STATE_OFF == mbutton->previousState)
   {
@@ -556,7 +564,7 @@ void buttonModeStateTransition (struct _mbutton * mbutton,
      else
      {
        /*long click*/
-       mbutton.buttonStateUpdate = TRUE;
+       mbutton->buttonStateUpdate = TRUE;
        mbutton->buttonPreviousMode = mbutton->buttonMode;
        mbutton->buttonEnabled = BUTTON_BLOCKED;
        mbutton->buttonMode = BUTTON_MODE_SET;
@@ -572,10 +580,14 @@ void buttonModeStateTransition (struct _mbutton * mbutton,
       return;
      
     if ((currentTime - mbutton->pushDown) 
-	< BUTTON_MODE_CHANGE_TIMEOUT)
+	> BUTTON_MODE_CHANGE_TIMEOUT)
     {
-      //fast click
-      changeButtonMode(mbutton, mfv);
+      //long click
+      //changeButtonMode(mbutton, mfv);
+      mbutton->buttonStateUpdate = TRUE;
+       mbutton->buttonPreviousMode = mbutton->buttonMode;
+       mbutton->buttonEnabled = BUTTON_BLOCKED;
+       mbutton->buttonMode = BUTTON_MODE_SET;
       mbutton->pushDown = currentTime;
       return;
     }
@@ -583,7 +595,7 @@ void buttonModeStateTransition (struct _mbutton * mbutton,
   
 }
 
-boolean pfeiferCheckString (byte * data, byte len)
+boolean pfeiferCheckString (const byte * data, byte len)
 {
   if ((len > 2) && (data[len-2] == byte('\r')) 
       && (data[len-1] == byte('\n')))
@@ -619,7 +631,7 @@ void updateMfieldValue (void* arg)
   struct _chargerControl * charger =  mcontrol->charger;
 
   mvals->setField = charger->voltage;
-  mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mfv->counts);
+  mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
   float x = mvals->accumulatedRawCurrent/1024. - mvals->rawCorrection;
   long currentField = floor(mvals->a*x*x + mvals->b*x + mvals->c);
   if (currentField != mvals->currentField)
@@ -632,9 +644,9 @@ void updateMfieldValue (void* arg)
     {
       charger->voltage = mvals->currentField;
       mvals->setField =  mvals->currentField;
-      mbutton->buttonMode = mbuttonPreviousMode;
+      mbutton->buttonMode = mbutton->buttonPreviousMode;
       mbutton->buttonEnabled = BUTTON_ENABLED;
-      mbutton.buttonStateUpdate = TRUE;
+      mbutton->buttonStateUpdate = TRUE;
     }
 }
 
@@ -649,7 +661,7 @@ void accumulateAnalogRead(void* arg)
    mvals->counts++;
    
    /*update button state*/
-   buttonModeStateTransition (mbutton); 
+   buttonModeStateTransition (mbutton, mvals); 
 }
 
 void checkTimer (struct timer* Timer, void * arg)
@@ -670,7 +682,9 @@ void checkTimer (struct timer* Timer, void * arg)
 
 void checkPfeiferInfo(void *arg)
 {
-  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  struct _pfeiferControl * pfeifer = (struct _pfeiferControl *)arg;
+  struct _rs485 * rs485 = pfeifer->rs485;
+
   sendSerialData (rs485);
   recvSerialData (rs485);
 }
@@ -679,7 +693,7 @@ void checkPfeiferInfo(void *arg)
 
 void updateChargerInfo(void * arg)
 {
-  struct _rs485 * chargerControl = (struct _chargerControl *)arg;
+  struct _chargerControl * chargerControl = (struct _chargerControl *)arg;
   struct _rs485 * rs485 = chargerControl->rs485;
 
   rs485->transmitEnabled = 1;
@@ -694,8 +708,8 @@ void updateChargerInfo(void * arg)
     {
       if (byte('B') == rs485->recvbuf[2])
 	{
-	  float * recvvoltage = &(rs485->recvbuf[4]);
-	  long newvoltage = long((*recvvoltage)*100.);
+	  float * recvvoltage = (float*)&(rs485->recvbuf[4]);
+	  long newvoltage = long((*recvvoltage)*1000.);
 	  if (newvoltage != chargerControl->voltage)
 	    {
 	      chargerControl->voltage = newvoltage;
@@ -717,7 +731,7 @@ void updateChargerInfo(void * arg)
 
 void checkChargerInfo(void * arg)
 {
-  struct _rs485 * chargerControl = (struct _chargerControl *)arg;
+  struct _chargerControl * chargerControl = (struct _chargerControl *)arg;
   struct _rs485 * rs485 = chargerControl->rs485;
   sendSerialData (rs485);
   recvSerialData (rs485);
@@ -726,7 +740,8 @@ void checkChargerInfo(void * arg)
 
 void updatePfeiferInfo (void *arg)
 {
-  struct _rs485 * rs485 = (struct _rs485 *)arg;
+  struct _pfeiferControl * pfeifer = (struct _pfeiferControl *)arg;
+  struct _rs485 * rs485 = pfeifer->rs485;
   rs485->transmitEnabled = 1;
   if (rs485->updateInfo && rs485->recvd > 7)
     {
@@ -734,8 +749,8 @@ void updatePfeiferInfo (void *arg)
       rs485->updateInfo = 0;
       printEmptyLine (rs485->lcd, 3, 0, 14);
       rs485->lcd->setCursor(3,0);
-      for (i = 5; i < rs485->recvd - 2; ++i)
-	rs485->lcd->write(rs485->recvbuf[i]);
+      strncpy(pfeifer->pressure, &rs485->recvbuf[5], rs485->recvd - 7);
+      pfeifer->pressure[rs485->recvd - 7] = byte('\0');
       rs485->recvd = 0;
       rs485->sent = 0;
     }
@@ -755,7 +770,7 @@ void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine,
 void loop()
 { 
   checkTimer (&chargerTimer, &chargerControl);
-  checkTimer (&PfeiferTimer, &pfeiferDevice);
+  checkTimer (&pfeiferTimer, &pfeiferControl);
   checkTimer (&MFieldTimer, &mfieldcontrol);
-  checkTimer (&LCDTimer, &lcdControl);)
+  checkTimer (&LCDTimer, &lcdControl);
 }
