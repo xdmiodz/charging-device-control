@@ -71,7 +71,8 @@ struct _button
 
   
   byte buttonPin;
-#define BUTTON_MODE_CHANGE_TIMEOUT 1500
+#define BUTTON_MODE_LONG_CLICK_TIMEOUT 1000
+#define BUTTON_MODE_FAST_CLICK_TIMEOUT 50
   unsigned long pushDown; //time of recent push down
   unsigned long pushUp; //time of recent push up  
   
@@ -452,10 +453,10 @@ void updateLCD(void * arg)
   LiquidCrystal * lcd = lcdControl->lcd;
   
   if (mbutton->buttonStateUpdate)
-  {
-    printButtonMode (lcd, mbutton);
-    mbutton->buttonStateUpdate = FALSE;
-  }  
+    {
+      printButtonMode (lcd, mbutton);
+      mbutton->buttonStateUpdate = FALSE;
+    }  
   if (mvals->setField != lcdControl->setField)
     {
       lcdControl->setField = mvals->setField; 
@@ -533,10 +534,10 @@ void buttonModeStateTransition (struct _button * mbutton,
 {
   byte state = digitalRead(mbutton->buttonPin);
   
-  if (BUTTON_MODE_SET == mbutton->buttonMode)
-    return;
+
   if  (mbutton->buttonEnabled == BUTTON_BLOCKED)
     return;
+      
   if (BUTTON_STATE_ON == state && 
       BUTTON_STATE_OFF == mbutton->previousState)
   {
@@ -553,42 +554,46 @@ void buttonModeStateTransition (struct _button * mbutton,
 
      if (mbutton->pushUp < mbutton->pushDown)
        return;
+
+     unsigned long presstime = mbutton->pushUp - mbutton->pushDown;
+     if (presstime < BUTTON_MODE_FAST_CLICK_TIMEOUT)
+       return;
        
-     if ((mbutton->pushUp - mbutton->pushDown) 
-	 < BUTTON_MODE_CHANGE_TIMEOUT)
+     if ((presstime < BUTTON_MODE_LONG_CLICK_TIMEOUT) && 
+	 (presstime > BUTTON_MODE_FAST_CLICK_TIMEOUT))
      {
        //fast click
        changeButtonMode(mbutton, mfv);
        return;
      }
-     else
-     {
-       /*long click*/
-       mbutton->buttonStateUpdate = TRUE;
-       mbutton->buttonPreviousMode = mbutton->buttonMode;
-       mbutton->buttonEnabled = BUTTON_BLOCKED;
-       mbutton->buttonMode = BUTTON_MODE_SET;
-       return;
-     }
+     if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
+       {
+	 //long click 
+	 //changeButtonMode(mbutton, mfv);
+	 mbutton->buttonStateUpdate = TRUE;
+	 mbutton->buttonPreviousMode = mbutton->buttonMode;
+	 mbutton->buttonEnabled = BUTTON_BLOCKED;
+	 mbutton->buttonMode = BUTTON_MODE_SET;
+       }
      return;
   }
-  if (BUTTON_STATE_ON == state && 
+  if (BUTTON_STATE_ON == state &&
       BUTTON_STATE_ON == mbutton->previousState)
   {
     unsigned long currentTime = millis();
     if (currentTime < mbutton->pushDown)
       return;
      
-    if ((currentTime - mbutton->pushDown) 
-	> BUTTON_MODE_CHANGE_TIMEOUT)
+    unsigned long presstime = currentTime - mbutton->pushDown;     
+    
+    if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
     {
       //long click
       //changeButtonMode(mbutton, mfv);
       mbutton->buttonStateUpdate = TRUE;
-       mbutton->buttonPreviousMode = mbutton->buttonMode;
-       mbutton->buttonEnabled = BUTTON_BLOCKED;
-       mbutton->buttonMode = BUTTON_MODE_SET;
-      mbutton->pushDown = currentTime;
+      mbutton->buttonPreviousMode = mbutton->buttonMode;
+      mbutton->buttonMode = BUTTON_MODE_SET;
+      mbutton->buttonEnabled = BUTTON_BLOCKED;
       return;
     }
   }
