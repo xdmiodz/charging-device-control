@@ -9,6 +9,8 @@
 #define ChargerSerialControlPin 36
 #define ChargerSerialBaudrate 9600
 
+#define PfeiferUpdateTimeout 5000
+#define ChargeUpdateTimeout  1000
 
 /*Global defines*/
 #define TRUE     1
@@ -19,7 +21,7 @@ struct timer
   unsigned long startTime;
   unsigned long periodTime;
   void (*callback) (void*);
-  void (*nocallback) (void*); //This callback is called if the timer is still running
+  void (*idle_callback) (void*); //This callback is called if the timer is still running
 };
 
 //timer structure for Pfeifer
@@ -188,7 +190,7 @@ void setup()
   MFieldTimer.startTime = millis();
   MFieldTimer.periodTime = 100;
   MFieldTimer.callback = updateMfieldValue;
-  MFieldTimer.nocallback = accumulateAnalogRead;
+  MFieldTimer.idle_callback = accumulateAnalogRead;
   
 
   //init button
@@ -223,9 +225,9 @@ void setup()
 
   //init timer for Pfeifer Device
   pfeiferTimer.startTime = millis();
-  pfeiferTimer.periodTime = 5000;
+  pfeiferTimer.periodTime = PfeiferUpdateTimeout;
   pfeiferTimer.callback = updatePfeiferInfo;
-  pfeiferTimer.nocallback = checkPfeiferInfo;
+  pfeiferTimer.idle_callback = checkPfeiferInfo;
 
 
   //init pfeifer serial control
@@ -246,9 +248,9 @@ void setup()
 
   //init timer for Charger Device
   chargerTimer.startTime = millis();
-  chargerTimer.periodTime = 1000;
+  chargerTimer.periodTime = ChargeUpdateTimeout;
   chargerTimer.callback = updateChargerInfo;
-  chargerTimer.nocallback = checkChargerInfo;
+  chargerTimer.idle_callback = checkChargerInfo;
 
   //init charger control
   chargerControl.rs485 = &rs485Charger;
@@ -272,7 +274,7 @@ void setup()
   LCDTimer.startTime = millis();
   LCDTimer.periodTime = 1000;
   LCDTimer.callback = NULL;
-  LCDTimer.nocallback = updateLCD;  
+  LCDTimer.idle_callback = updateLCD;  
 }
 
 
@@ -365,11 +367,10 @@ void recvSerialData(struct _rs485 * rs485)
       
       /*Wow! We have a reply!*/
       if (rs485->checkRecvd && 
-	  rs485->checkRecvd((byte*)rs485->recvbuf, rs485->recvd))
-	{
-	  rs485->updateInfo = 1;
-	}
-
+	    rs485->checkRecvd((byte*)rs485->recvbuf, rs485->recvd))
+	    {
+	      rs485->updateInfo = 1;
+	    }
     }
   if (rs485->recvd == MAX_LEN_MSG)
     rs485->recvd = 0;
@@ -401,7 +402,7 @@ void sendSerialData(struct _rs485 * rs485)
 }
 
 void printButtonMode(LiquidCrystal * lcd,
-		     struct _button * mbutton)
+		                struct _button * mbutton)
 {
   lcd->setCursor (14,1);
   switch (mbutton->buttonMode)
@@ -681,8 +682,8 @@ void checkTimer (struct timer* Timer, void * arg)
       return;
     }
   }
-  if (Timer->nocallback)
-    Timer->nocallback (arg);
+  if (Timer->idle_callback)
+    Timer->idle_callback (arg);
 }
 
 void checkPfeiferInfo(void *arg)
