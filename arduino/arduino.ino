@@ -42,15 +42,13 @@ struct _mfieldvals
   long accumulatedRaw;
   long accumulatedRawCurrent;
   long setField;
-  float rawCorrection;
+
+#define FINE_SET_LINEAR_SCALE 0.5
+  float linearScale;
+
   byte sensorPin;
  
   unsigned long counts;
-  
-  /*coeeficients to  parabola*/
-  float a; 
-  float b;
-  float c;
   
 #define MAX_VOLTAGE 500
 #define MIN_VOLTAGE 100
@@ -180,10 +178,7 @@ void setup()
   mfieldvals.counts = 0;
   mfieldvals.maxval = MAX_VOLTAGE;
   mfieldvals.minval = MIN_VOLTAGE;
-  mfieldvals.rawCorrection = 0;
-  mfieldvals.a = 0;
-  mfieldvals.b = MAX_VOLTAGE - MIN_VOLTAGE;
-  mfieldvals.c = MIN_VOLTAGE;
+  mfieldvals.linearScale = FINE_SET_LINEAR_SCALE;
   mfieldvals.setField = MIN_VOLTAGE;
 
   //init timer for mfield varistor
@@ -413,11 +408,11 @@ void printButtonMode(LiquidCrystal * lcd,
       break;
     case BUTTON_MODE_COARSE:
       lcd->print (" ");
-      lcd->print (char(0x5E));
+      lcd->print (char(0x5E)); 
       break;
     case BUTTON_MODE_SET:
       lcd->print (" ");
-      lcd->print (char(0x9B));
+      lcd->print (char(0x9B)); //battery symbol
       break;
     default:
       break;
@@ -478,19 +473,6 @@ void setCoarseMode (struct _button * mbutton,
   mbutton->buttonMode = BUTTON_MODE_COARSE;   
   mbutton->buttonPreviousMode = BUTTON_MODE_FINE;   
   mbutton->buttonStateUpdate = TRUE;
-  
-  mfv->rawCorrection = 0.;
-  float x = mfv->accumulatedRawCurrent/1024.;
-  if ((x > 0) && (x < 1))
-    {
-      mfv->a = (1/x/(x-1))*(mfv->currentField - 
-			    MIN_VOLTAGE - x*(MAX_VOLTAGE - MIN_VOLTAGE));
-    }
-  else
-    mfv->a = 0;
-  
-  mfv->b = (MAX_VOLTAGE - MIN_VOLTAGE) - mfv->a;
-  mfv->c = MIN_VOLTAGE;
 }
 
 void setFineMode (struct _button * mbutton,
@@ -499,20 +481,6 @@ void setFineMode (struct _button * mbutton,
   mbutton->buttonStateUpdate = TRUE;
   mbutton->buttonMode = BUTTON_MODE_FINE;
   mbutton->buttonPreviousMode = BUTTON_MODE_COARSE;   
-  
-  long currentField = mfv->currentField;
-  mfv->minval = (currentField / 100)*100;
-  mfv->maxval =  mfv->minval + 100;
-  long k2 = (mfv->maxval -  mfv->minval);
-  long b2 = mfv->minval;
-  
-  mfv->rawCorrection = (k2*mfv->accumulatedRawCurrent/1024. + 
-			b2 - currentField)/k2;   
-  
-  mfv->a = 0;    
-  mfv->b = k2;
-  mfv->c = b2;
-  
 }
 
 void changeButtonMode (struct _button * mbutton,
@@ -570,7 +538,6 @@ void buttonModeStateTransition (struct _button * mbutton,
      if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
        {
 	 //long click 
-	 //changeButtonMode(mbutton, mfv);
 	 mbutton->buttonStateUpdate = TRUE;
 	 mbutton->buttonPreviousMode = mbutton->buttonMode;
 	 mbutton->buttonEnabled = BUTTON_BLOCKED;
@@ -590,7 +557,6 @@ void buttonModeStateTransition (struct _button * mbutton,
     if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
     {
       //long click
-      //changeButtonMode(mbutton, mfv);
       mbutton->buttonStateUpdate = TRUE;
       mbutton->buttonPreviousMode = mbutton->buttonMode;
       mbutton->buttonMode = BUTTON_MODE_SET;
@@ -630,7 +596,6 @@ boolean chargerCheckReply (const byte * data, byte len)
 
 void updateMfieldValue (void* arg)
 {
-  
   struct _mfieldcontrol * mcontrol = (struct _mfieldcontrol *)arg;
   struct _mfieldvals * mvals = mcontrol->mvals;
   struct _button * mbutton = mcontrol->button;
@@ -638,10 +603,21 @@ void updateMfieldValue (void* arg)
 
   mvals->setField = charger->voltage;
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
-  float x = mvals->accumulatedRawCurrent/1024. - mvals->rawCorrection;
-  long currentField = floor(mvals->a*x*x + mvals->b*x + mvals->c);
+  float x = mvals->accumulatedRawCurrent/1024;
+  long currentField = floor((mvals->maxval - mvals->minval)*x + mvals->minval);
+
   if (currentField != mvals->currentField)
-    mvals->currentField = currentField; 
+  {
+    if (mbutton->buttonMode == BUTTON_MODE_FINE)
+    {
+      mvals->currentField = currentField;
+    }
+    else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
+    {
+      long step = mvals->linearScale*(mvals->currentField - currentField);
+      mvals->currentField += step;
+    }
+  }
 
   mvals->accumulatedRaw = 0;
   mvals->counts = 0;
