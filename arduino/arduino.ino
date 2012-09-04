@@ -43,7 +43,7 @@ struct _mfieldvals
   long accumulatedRawCurrent;
   long setField;
 
-#define FINE_SET_LINEAR_SCALE 0.5
+#define FINE_SET_LINEAR_SCALE 0.1
   float linearScale;
 
   byte sensorPin;
@@ -603,22 +603,22 @@ void updateMfieldValue (void* arg)
 
   mvals->setField = charger->voltage;
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
-  float x = mvals->accumulatedRawCurrent/1024;
+  float x = mvals->accumulatedRawCurrent/1024.;
   long currentField = floor((mvals->maxval - mvals->minval)*x + mvals->minval);
-
-  if (currentField != mvals->currentField)
+  long step = 0;
+  if (mbutton->buttonMode == BUTTON_MODE_FINE)
   {
-    if (mbutton->buttonMode == BUTTON_MODE_FINE)
-    {
-      mvals->currentField = currentField;
-    }
-    else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
-    {
-      long step = mvals->linearScale*(mvals->currentField - currentField);
-      mvals->currentField += step;
-    }
+    step = ceil(mvals->linearScale*(currentField - mvals->currentField));
   }
-
+  else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
+  {
+    step = (currentField - mvals->currentField);
+  }
+  
+  if (step != 0)
+  {
+    mvals->currentField += step;
+  }
   mvals->accumulatedRaw = 0;
   mvals->counts = 0;
   
