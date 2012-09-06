@@ -16,6 +16,26 @@
 #define TRUE     1
 #define FALSE    0
 
+struct vband
+{
+    byte id;
+    unsigned int minv;
+    unsigned int maxv;
+};
+
+#define MIN_VBAND_ID 0
+#define MAX_VBAND_ID 8 
+//voltage bands available for setting
+struct vband vbands[{0, 100, 200},
+                    {1, 200, 300},
+                    {2, 300, 400},
+                    {3, 400, 500}
+                    {4, 500, 600},
+                    {5, 600, 700},
+                    {6, 700, 800},
+                    {7, 800, 900},
+                    {8, 900, 1000}];
+
 struct timer 
 {
   unsigned long startTime;
@@ -41,17 +61,14 @@ struct _mfieldvals
   long currentField;
   long accumulatedRaw;
   long accumulatedRawCurrent;
-  float rawCorrection;
   long setField;
-
-#define FINE_SET_LINEAR_SCALE 0.1
-  float linearScale;
-
+  
+  byte vband;
+  
   byte sensorPin;
- 
   unsigned long counts;
   
-#define MAX_VOLTAGE 500
+#define MAX_VOLTAGE 1000
 #define MIN_VOLTAGE 100
   long maxval;
   long minval;
@@ -60,9 +77,8 @@ struct _mfieldvals
 #define BUTTON_PIN 42
 struct _button
 {
-#define BUTTON_MODE_COARSE 0
-#define BUTTON_MODE_FINE   1
-#define BUTTON_MODE_SET    2
+#define BUTTON_MODE_VBAND  0
+#define BUTTON_MODE_SET    1
   byte buttonMode;
   byte buttonPreviousMode;
 
@@ -173,15 +189,14 @@ void setup()
   lcd.print("B: "); 
   
   //init values for magnetic field varistor
-  mfieldvals.rawCorrection = 0;
-  mfieldvals.currentField = MIN_VOLTAGE;
   mfieldvals.accumulatedRaw = 0;
   mfieldvals.sensorPin = FIELD_SENSOR;
   mfieldvals.counts = 0;
-  mfieldvals.maxval = MAX_VOLTAGE;
-  mfieldvals.minval = MIN_VOLTAGE;
-  mfieldvals.linearScale = FINE_SET_LINEAR_SCALE;
-  mfieldvals.setField = MIN_VOLTAGE;
+  mfieldvals.vband = 0;
+  mfieldvals.maxval = vbands[0].maxv;
+  mfieldvals.minval = vbands[0].minv;
+  mfieldvals.setField = mfieldvals.minval;
+  mfieldvals.currentField = mfieldvals.minval;
 
   //init timer for mfield varistor
   MFieldTimer.startTime = millis();
@@ -191,7 +206,7 @@ void setup()
   
 
   //init button
-  button.buttonMode = BUTTON_MODE_COARSE;
+  button.buttonMode = BUTTON_MODE_VBAND;
   button.buttonState = BUTTON_STATE_OFF;
   button.buttonPin = BUTTON_PIN;
   button.pushDown = millis();
@@ -396,20 +411,20 @@ void sendSerialData(struct _rs485 * rs485)
 }
 
 void printButtonMode(LiquidCrystal * lcd,
-		                struct _button * mbutton)
+		     struct _button * mbutton,
+                     struct _mfieldvals * mvals)
 {
-  lcd->setCursor (14,1);
+  
   switch (mbutton->buttonMode)
     {
-    case BUTTON_MODE_FINE:
-      lcd->print (char(0x5E));
-      lcd->print (char(0x5E));
-      break;
-    case BUTTON_MODE_COARSE:
-      lcd->print (" ");
-      lcd->print (char(0x5E)); 
+    case BUTTON_MODE_VBAND:
+      lcd->setCursor (12,1);
+      lcd->print ("[");
+      lcd->print (mvals->vband);
+      lcd->print ("]");
       break;
     case BUTTON_MODE_SET:
+      lcd->setCursor (14,1);
       lcd->print (" ");
       lcd->print (char(0x9B)); //battery symbol
       break;
@@ -453,7 +468,7 @@ void updateLCD(void * arg)
   
   if (mbutton->buttonStateUpdate)
     {
-      printButtonMode (lcd, mbutton);
+      printButtonMode (lcd, mbutton, mvals);
       mbutton->buttonStateUpdate = FALSE;
     }  
   if (mvals->setField != lcdControl->setField)
@@ -470,33 +485,24 @@ void updateLCD(void * arg)
   printPressure(lcd, pfeifer->pressure);
 }
 
-void setCoarseMode (struct _button * mbutton, 
+void setVbandMode (struct _button * mbutton, 
 		    struct _mfieldvals * mfv)
 {
-  mbutton->buttonMode = BUTTON_MODE_COARSE;   
-  mbutton->buttonPreviousMode = BUTTON_MODE_FINE;   
+  mbutton->buttonMode = BUTTON_MODE_VBAND;   
+  mbutton->buttonPreviousMode = BUTTON_MODE_VBAND;
+  if (mfv->vband < MAX_VBAND_ID)
+  {
+     mfv->vband++;
+     mfv->minval = 
+  }  
   mbutton->buttonStateUpdate = TRUE;
 }
-
-void setFineMode (struct _button * mbutton,
-		  struct _mfieldvals * mfv)
-{
-  mbutton->buttonStateUpdate = TRUE;
-  mbutton->buttonMode = BUTTON_MODE_FINE;
-  mbutton->buttonPreviousMode = BUTTON_MODE_COARSE;   
-}
-
 void changeButtonMode (struct _button * mbutton,
 		       struct _mfieldvals * mfv)
 {
-  if (BUTTON_MODE_COARSE == mbutton->buttonMode)
+  if (BUTTON_MODE_VBAND == mbutton->buttonMode)
     {
-      setFineMode (mbutton, mfv);
-      return;
-    }
-  if (BUTTON_MODE_FINE == mbutton->buttonMode)
-    {
-      setCoarseMode (mbutton, mfv);
+      setVbandMode (mbutton, mfv);
       return;
     }
 }
