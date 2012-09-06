@@ -421,6 +421,8 @@ void printButtonMode(LiquidCrystal * lcd,
 void printSetField(LiquidCrystal * lcd, long val)
 {
   lcd->setCursor (7, 1);
+  lcd->print("    ");
+  lcd->setCursor (7, 1);
   lcd->print ("/ ");
   lcd->print (val);
 }
@@ -428,6 +430,8 @@ void printSetField(LiquidCrystal * lcd, long val)
 
 void printCurrentField(LiquidCrystal * lcd, long val)
 {
+  lcd->setCursor (3, 1);
+  lcd->print("    ");
   lcd->setCursor (3, 1);
   lcd->print (val);
 }
@@ -605,20 +609,22 @@ void updateMfieldValue (void* arg)
 
   mvals->setField = charger->voltage;
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
-  float x = mvals->accumulatedRawCurrent/1024. + mvals->rawCorrection;
-  long currentField = floor(k*x + b);
-  long step = 0;
+  float xreal = mvals->accumulatedRawCurrent/1024.;
+  long realField = floor(k*xreal + b);
+  
   if (mbutton->buttonMode == BUTTON_MODE_FINE)
   {
-    step = ceil(mvals->linearScale*(currentField - mvals->currentField));
-    mvals->currentField += step;
-    mvals->rawCorrection = (mvals->currentField - k*x - b)/(float)k;
+    float step = 0;
+    float ximg = xreal + mvals->rawCorrection;
+    long imgField = floor(k*(xreal + ximg) + b);
+    step = mvals->linearScale*(imgField - realField);
+    mvals->currentField = imgField;
+    mvals->rawCorrection = (step - b)/(float)k;
   }
   else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
   {
-    step = (currentField - mvals->currentField);
+    mvals->currentField = realField;
     mvals->rawCorrection = 0;
-    mvals->currentField += step;
   }
   
   mvals->accumulatedRaw = 0;
