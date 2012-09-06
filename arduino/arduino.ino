@@ -41,6 +41,7 @@ struct _mfieldvals
   long currentField;
   long accumulatedRaw;
   long accumulatedRawCurrent;
+  float rawCorrection;
   long setField;
 
 #define FINE_SET_LINEAR_SCALE 0.1
@@ -172,6 +173,7 @@ void setup()
   lcd.print("B: "); 
   
   //init values for magnetic field varistor
+  mfieldvals.rawCorrection = 0;
   mfieldvals.currentField = MIN_VOLTAGE;
   mfieldvals.accumulatedRaw = 0;
   mfieldvals.sensorPin = FIELD_SENSOR;
@@ -325,14 +327,11 @@ void getChargerVoltage(struct _rs485 * charger)
   return;
 }
 
-
 void setSerialCmdStr (const char* cmd, struct _rs485 * rs485)
 {
   rs485->cmdlen = strlen(cmd);
   strncpy ((char*)rs485->sendbuf, cmd,  rs485->cmdlen);
 }
-
-
 
 void setSerialMode (struct _rs485* rs485, boolean devMode)
 {
@@ -601,24 +600,27 @@ void updateMfieldValue (void* arg)
   struct _button * mbutton = mcontrol->button;
   struct _chargerControl * charger =  mcontrol->charger;
 
+  long k = (mvals->maxval - mvals->minval);
+  long b = mvals->minval;
+
   mvals->setField = charger->voltage;
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
-  float x = mvals->accumulatedRawCurrent/1024.;
-  long currentField = floor((mvals->maxval - mvals->minval)*x + mvals->minval);
+  float x = mvals->accumulatedRawCurrent/1024. + mvals->rawCorrection;
+  long currentField = floor(k*x + b);
   long step = 0;
   if (mbutton->buttonMode == BUTTON_MODE_FINE)
   {
     step = ceil(mvals->linearScale*(currentField - mvals->currentField));
+    mvals->currentField += step;
+    mvals->rawCorrection = (mvals->currentField - k*x - b)/(float)k;
   }
   else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
   {
     step = (currentField - mvals->currentField);
-  }
-  
-  if (step != 0)
-  {
+    mvals->rawCorrection = 0;
     mvals->currentField += step;
   }
+  
   mvals->accumulatedRaw = 0;
   mvals->counts = 0;
   
