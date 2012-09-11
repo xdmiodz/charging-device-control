@@ -11,6 +11,7 @@
 
 #define PfeiferUpdateTimeout 5000
 #define ChargeUpdateTimeout  1200
+#define VaristorUpdatTime    100
 
 /*Global defines*/
 #define TRUE     1
@@ -24,7 +25,8 @@ struct vband
 };
 
 #define MIN_VBAND_ID 0
-#define MAX_VBAND_ID 8 
+#define MAX_VBAND_ID 8
+
 //voltage bands available for setting
 struct vband vbands[{0, 100, 200},
                     {1, 200, 300},
@@ -203,7 +205,7 @@ void setup()
 
   //init timer for mfield varistor
   MFieldTimer.startTime = millis();
-  MFieldTimer.periodTime = 100;
+  MFieldTimer.periodTime = VaristorUpdatTime;
   MFieldTimer.callback = updateMfieldValue;
   MFieldTimer.idle_callback = accumulateAnalogRead;
   
@@ -342,13 +344,11 @@ void getChargerVoltage(struct _rs485 * charger)
 }
 
 void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
-          byte len)
+                      byte len)
 {
   rs485->cmdlen = len;
   byte i;
-  for (i = 0 ; i < len; ++i)
-    rs485->sendbuf[i] = cmd[i];
-  //memcpy((void*)rs485->sendbuf, (void*)cmd, len);
+  memcpy((void*)rs485->sendbuf, (void*)cmd, len);
 }
 
 void setSerialCmdStr (const char* cmd, struct _rs485 * rs485)
@@ -421,7 +421,7 @@ void sendSerialData(struct _rs485 * rs485)
 }
 
 void printButtonMode(LiquidCrystal * lcd,
-		     struct _button * mbutton,
+                     struct _button * mbutton,
                      struct _mfieldvals * mvals)
 {
   
@@ -495,94 +495,96 @@ void updateLCD(void * arg)
   printPressure(lcd, pfeifer->pressure);
 }
 
-void setVbandMode (struct _button * mbutton, 
-        struct _mfieldvals * mfv)
+void changeVbandMode (struct _button * mbutton, 
+                      struct _mfieldvals * mfv)
 {
   mbutton->buttonMode = BUTTON_MODE_VBAND;   
   mbutton->buttonPreviousMode = BUTTON_MODE_VBAND;
+  
   if (mfv->vband < MAX_VBAND_ID)
-  {
-     mfv->vband++;
-     mfv->minval = 
-  }  
+    mfv->vband++;
+  else
+    mfv->vband = 0;
+  
+  mfv->minval = vbands[mfv->vband].minv;
+  mfv->maxval = vbands[mfv->vband].maxv;
   mbutton->buttonStateUpdate = TRUE;
 }
+
 void changeButtonMode (struct _button * mbutton,
-		       struct _mfieldvals * mfv)
+                       struct _mfieldvals * mfv)
 {
   if (BUTTON_MODE_VBAND == mbutton->buttonMode)
-    {
-      setVbandMode (mbutton, mfv);
-      return;
-    }
+    changeVbandMode (mbutton, mfv);
+  
+  return;
 }
 
 void buttonModeStateTransition (struct _button * mbutton,
-        struct _mfieldvals * mfv)
+                                struct _mfieldvals * mfv)
 {
   byte state = digitalRead(mbutton->buttonPin);
-  
 
   if  (mbutton->buttonEnabled == BUTTON_BLOCKED)
     return;
       
   if (BUTTON_STATE_ON == state && 
       BUTTON_STATE_OFF == mbutton->previousState)
-  {
-     mbutton->previousState = BUTTON_STATE_ON;
-     mbutton->pushDown = millis();
-     return;
-  }
+    {
+      mbutton->previousState = BUTTON_STATE_ON;
+      mbutton->pushDown = millis();
+      return;
+    }
   
   if (BUTTON_STATE_OFF == state && 
       BUTTON_STATE_ON == mbutton->previousState)
-  {
-     mbutton->previousState = BUTTON_STATE_OFF;
-     mbutton->pushUp = millis();
-
-     if (mbutton->pushUp < mbutton->pushDown)
-       return;
-
-     unsigned long presstime = mbutton->pushUp - mbutton->pushDown;
-     if (presstime < BUTTON_MODE_FAST_CLICK_TIMEOUT)
-       return;
-       
-     if ((presstime < BUTTON_MODE_LONG_CLICK_TIMEOUT) && 
-   (presstime > BUTTON_MODE_FAST_CLICK_TIMEOUT))
-     {
-       //fast click
-       changeButtonMode(mbutton, mfv);
-       return;
-     }
-     if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
-       {
-   //long click 
-   mbutton->buttonStateUpdate = TRUE;
-   mbutton->buttonPreviousMode = mbutton->buttonMode;
-   mbutton->buttonEnabled = BUTTON_BLOCKED;
-   mbutton->buttonMode = BUTTON_MODE_SET;
-       }
-     return;
-  }
-  if (BUTTON_STATE_ON == state &&
-      BUTTON_STATE_ON == mbutton->previousState)
-  {
-    unsigned long currentTime = millis();
-    if (currentTime < mbutton->pushDown)
-      return;
-     
-    unsigned long presstime = currentTime - mbutton->pushDown;     
-    
-    if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
     {
-      //long click
-      mbutton->buttonStateUpdate = TRUE;
-      mbutton->buttonPreviousMode = mbutton->buttonMode;
-      mbutton->buttonMode = BUTTON_MODE_SET;
-      mbutton->buttonEnabled = BUTTON_BLOCKED;
+      mbutton->previousState = BUTTON_STATE_OFF;
+      mbutton->pushUp = millis();
+
+      if (mbutton->pushUp < mbutton->pushDown)
+        return;
+
+      unsigned long presstime = mbutton->pushUp - mbutton->pushDown;
+      if (presstime < BUTTON_MODE_FAST_CLICK_TIMEOUT)
+        return;
+       
+      if ((presstime < BUTTON_MODE_LONG_CLICK_TIMEOUT) && 
+          (presstime > BUTTON_MODE_FAST_CLICK_TIMEOUT))
+        {
+          //fast click
+          changeButtonMode(mbutton, mfv);
+          return;
+        }
+      if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
+        {
+          //long click 
+          mbutton->buttonStateUpdate = TRUE;
+          mbutton->buttonPreviousMode = mbutton->buttonMode;
+          mbutton->buttonEnabled = BUTTON_BLOCKED;
+          mbutton->buttonMode = BUTTON_MODE_SET;
+        }
       return;
     }
-  }
+  if (BUTTON_STATE_ON == state &&
+      BUTTON_STATE_ON == mbutton->previousState)
+    {
+      unsigned long currentTime = millis();
+      if (currentTime < mbutton->pushDown)
+        return;
+     
+      unsigned long presstime = currentTime - mbutton->pushDown;     
+    
+      if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
+        {
+          //long click
+          mbutton->buttonStateUpdate = TRUE;
+          mbutton->buttonPreviousMode = mbutton->buttonMode;
+          mbutton->buttonMode = BUTTON_MODE_SET;
+          mbutton->buttonEnabled = BUTTON_BLOCKED;
+          return;
+        }
+    }
   
 }
 
@@ -627,23 +629,8 @@ void updateMfieldValue (void* arg)
 
   mvals->setField = charger->voltage;
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
-  float xreal = mvals->accumulatedRawCurrent/1024.;
-  long realField = floor(k*xreal + b);
-  
-  if (mbutton->buttonMode == BUTTON_MODE_FINE)
-  {
-    float step = 0;
-    float ximg = xreal + mvals->rawCorrection;
-    long imgField = floor(k*(xreal + ximg) + b);
-    step = mvals->linearScale*(imgField - realField);
-    mvals->currentField = imgField;
-    mvals->rawCorrection = (step - b)/(float)k;
-  }
-  else if (mbutton->buttonMode == BUTTON_MODE_COARSE)
-  {
-    mvals->currentField = realField;
-    mvals->rawCorrection = 0;
-  }
+  float x = mvals->accumulatedRawCurrent/1024.;
+  long realField = ceil(k*x + b);
   
   mvals->accumulatedRaw = 0;
   mvals->counts = 0;
