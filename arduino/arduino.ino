@@ -10,7 +10,7 @@
 #define ChargerSerialBaudrate 9600
 
 #define PfeiferUpdateTimeout 5000
-#define ChargeUpdateTimeout  1000
+#define ChargeUpdateTimeout  1200
 
 /*Global defines*/
 #define TRUE     1
@@ -141,6 +141,9 @@ struct _chargerControl
   
   /*current voltage on the device*/
   long voltage;
+
+  /*set voltage on the device*/
+  long setVoltage;
 } chargerControl;
 
 struct _mfieldcontrol
@@ -266,7 +269,8 @@ void setup()
 
   //init charger control
   chargerControl.rs485 = &rs485Charger;
-  chargerControl.status = CHARGER_GET_VOLTAGE;
+  chargerControl.status = CHARGER_SET_VOLTAGE;
+  chargerControl.setVoltage = MIN_VOLTAGE;
 
   //init filed control
   mfieldcontrol.charger = &chargerControl;
@@ -301,13 +305,6 @@ byte checksum(const byte * cmd, byte len)
   return ~chk;
 }
 
-void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
-		      byte len)
-{
-  rs485->cmdlen = len;
-  memcpy((void*)rs485->sendbuf, (void*)cmd, len);
-}
-
 /*set cmd for setting info to Charger Device*/
 void setChargerVoltage(struct _rs485 * charger, long voltage)
 {
@@ -316,30 +313,42 @@ void setChargerVoltage(struct _rs485 * charger, long voltage)
   
   float fVolt = float(voltage)/1000.;
   byte * pbVolt = (byte *)&fVolt;
-  byte cmd[7] = {0};
+  byte cmd[8] = {0};
   
   cmd[0] = 1;
-  cmd[1] = byte('F');
-  cmd[2] = pbVolt[0];
-  cmd[3] = pbVolt[1];
-  cmd[4] = pbVolt[2];
-  cmd[5] = pbVolt[3];
-  cmd[6] = checksum(cmd, 6);
-  setSerialCmdBin (charger, cmd, 7);
+  cmd[1] = 6;
+  cmd[2] = byte('F');
+  cmd[3] = pbVolt[0];
+  cmd[4] = pbVolt[1];
+  cmd[5] = pbVolt[2];
+  cmd[6] = pbVolt[3];
+  cmd[7] = checksum(cmd, 7);
+  setSerialCmdBin (charger, cmd, 8);
   return;
 }
 
 /*set cmd for updating info from Charger Device*/
 void getChargerVoltage(struct _rs485 * charger)
 {
-  byte cmd[4] = {0};
+  byte cmd[5] = {0};
   
   cmd[0] = 1;
-  cmd[1] = byte('B');
-  cmd[2] = 0;
-  cmd[3] = checksum(cmd, 3);
-  setSerialCmdBin (charger, cmd, 4);
+  cmd[1] = 3;
+  cmd[2] = byte('B');
+  cmd[3] = 1;
+  cmd[4] = checksum(cmd, 4);
+  setSerialCmdBin (charger, cmd, 5);
   return;
+}
+
+void setSerialCmdBin (struct _rs485 * rs485, const byte * cmd,
+          byte len)
+{
+  rs485->cmdlen = len;
+  byte i;
+  for (i = 0 ; i < len; ++i)
+    rs485->sendbuf[i] = cmd[i];
+  //memcpy((void*)rs485->sendbuf, (void*)cmd, len);
 }
 
 void setSerialCmdStr (const char* cmd, struct _rs485 * rs485)
@@ -376,10 +385,10 @@ void recvSerialData(struct _rs485 * rs485)
       
       /*Wow! We have a reply!*/
       if (rs485->checkRecvd && 
-	    rs485->checkRecvd((byte*)rs485->recvbuf, rs485->recvd))
-	    {
-	      rs485->updateInfo = 1;
-	    }
+      rs485->checkRecvd((byte*)rs485->recvbuf, rs485->recvd))
+      {
+        rs485->updateInfo = 1;
+      }
     }
   if (rs485->recvd == MAX_LEN_MSG)
     rs485->recvd = 0;
@@ -401,10 +410,11 @@ void sendSerialData(struct _rs485 * rs485)
       rs485->serial->write(rs485->sendbuf[rs485->sent]);
       delay(calcDelay(1, rs485->baudrate));
       rs485->sent++;
-      setSerialMode (rs485, RS485_MODE_RX);
+      
     }
   else
     {
+      setSerialMode (rs485, RS485_MODE_RX);
       rs485->sent = 0;
       rs485->transmitEnabled = 0;
     }
@@ -436,7 +446,7 @@ void printButtonMode(LiquidCrystal * lcd,
 void printSetField(LiquidCrystal * lcd, long val)
 {
   lcd->setCursor (7, 1);
-  lcd->print("    ");
+  lcd->print("        ");
   lcd->setCursor (7, 1);
   lcd->print ("/ ");
   lcd->print (val);
@@ -486,7 +496,7 @@ void updateLCD(void * arg)
 }
 
 void setVbandMode (struct _button * mbutton, 
-		    struct _mfieldvals * mfv)
+        struct _mfieldvals * mfv)
 {
   mbutton->buttonMode = BUTTON_MODE_VBAND;   
   mbutton->buttonPreviousMode = BUTTON_MODE_VBAND;
@@ -508,7 +518,7 @@ void changeButtonMode (struct _button * mbutton,
 }
 
 void buttonModeStateTransition (struct _button * mbutton,
-				struct _mfieldvals * mfv)
+        struct _mfieldvals * mfv)
 {
   byte state = digitalRead(mbutton->buttonPin);
   
@@ -538,7 +548,7 @@ void buttonModeStateTransition (struct _button * mbutton,
        return;
        
      if ((presstime < BUTTON_MODE_LONG_CLICK_TIMEOUT) && 
-	 (presstime > BUTTON_MODE_FAST_CLICK_TIMEOUT))
+   (presstime > BUTTON_MODE_FAST_CLICK_TIMEOUT))
      {
        //fast click
        changeButtonMode(mbutton, mfv);
@@ -546,11 +556,11 @@ void buttonModeStateTransition (struct _button * mbutton,
      }
      if (presstime > BUTTON_MODE_LONG_CLICK_TIMEOUT)
        {
-	 //long click 
-	 mbutton->buttonStateUpdate = TRUE;
-	 mbutton->buttonPreviousMode = mbutton->buttonMode;
-	 mbutton->buttonEnabled = BUTTON_BLOCKED;
-	 mbutton->buttonMode = BUTTON_MODE_SET;
+   //long click 
+   mbutton->buttonStateUpdate = TRUE;
+   mbutton->buttonPreviousMode = mbutton->buttonMode;
+   mbutton->buttonEnabled = BUTTON_BLOCKED;
+   mbutton->buttonMode = BUTTON_MODE_SET;
        }
      return;
   }
@@ -589,18 +599,20 @@ boolean chargerCheckReply (const byte * data, byte len)
   if (data[0] != 1)
     return 0;
   if (len > 1)
+  { 
+    byte msg_len = data[1] + 2;
+    if (len == msg_len)
     {
-      byte msg_len = data[1] + 2;
-      if (len == msg_len)
-	if (data[len - 1] == checksum(data, len))
-	  return 1;
-	else
-	  return 0;
-      else
-	return 0;
-    }
-  else
-    return 0;
+     if (data[len - 1] == checksum(data, len - 1))
+       return 1;
+     else
+       return 0;
+   }
+   else
+     return 0;
+ }
+ else
+  return 0;
 }
 
 void updateMfieldValue (void* arg)
@@ -638,7 +650,7 @@ void updateMfieldValue (void* arg)
   
   if (BUTTON_MODE_SET == mbutton->buttonMode)
     {
-      charger->voltage = mvals->currentField;
+      charger->setVoltage = mvals->currentField;
       mvals->setField =  mvals->currentField;
       mbutton->buttonMode = mbutton->buttonPreviousMode;
       mbutton->buttonEnabled = BUTTON_ENABLED;
@@ -701,26 +713,32 @@ void updateChargerInfo(void * arg)
   rs485->sent = 0;
 
   if (CHARGER_GET_VOLTAGE == chargerControl->status)
+  {
+    rs485->updateInfo = 0;
+    if (byte('B') == rs485->recvbuf[2])
     {
-      if (byte('B') == rs485->recvbuf[2])
-	{
-	  float * recvvoltage = (float*)&(rs485->recvbuf[4]);
-	  long newvoltage = long((*recvvoltage)*1000.);
-	  if (newvoltage != chargerControl->voltage)
-	    {
-	      chargerControl->voltage = newvoltage;
-	      setChargerVoltage(rs485, chargerControl->voltage);
-	      chargerControl->status =  CHARGER_SET_VOLTAGE;
-	      return;
-	    }
-	  return;
-	} 
-      else
-	return;
-    }
-  
+     float * recvvoltage = (float*)&(rs485->recvbuf[4]);
+     long newvoltage = ceil(((*recvvoltage)*1000.));
+     setChargerVoltage(rs485, chargerControl->setVoltage);
+     chargerControl->status =  CHARGER_SET_VOLTAGE;
+     if (newvoltage != chargerControl->voltage)
+     {
+        chargerControl->voltage = newvoltage;
+        return;
+      }
+
+      return;
+    } 
+    else
+     return;
+  }
+
   if (CHARGER_SET_VOLTAGE == chargerControl->status)
-      chargerControl->status = CHARGER_GET_VOLTAGE;
+  {
+    rs485->updateInfo = 0;
+    getChargerVoltage(rs485);
+    chargerControl->status = CHARGER_GET_VOLTAGE;
+  }
   return;
 }
 
@@ -754,7 +772,7 @@ void updatePfeiferInfo (void *arg)
 
  
 void printEmptyLine(LiquidCrystal* lcd, byte startPos, byte startLine, 
-		    byte maxLen)
+        byte maxLen)
 {
    byte i;
    lcd->setCursor(startPos, startLine);
