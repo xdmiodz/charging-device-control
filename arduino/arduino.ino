@@ -146,6 +146,8 @@ struct _chargerControl
 
   /*set voltage on the device*/
   long setVoltage;
+
+  boolean setFieldUpdate;
 } chargerControl;
 
 struct _mfieldcontrol
@@ -274,6 +276,7 @@ void setup()
   chargerControl.rs485 = &rs485Charger;
   chargerControl.status = CHARGER_SET_VOLTAGE;
   chargerControl.setVoltage = MIN_VOLTAGE;
+  chargerControl.setFieldUpdate = TRUE;
 
   //init filed control
   mfieldcontrol.charger = &chargerControl;
@@ -338,7 +341,7 @@ void getChargerVoltage(struct _rs485 * charger)
   cmd[0] = 1;
   cmd[1] = 3;
   cmd[2] = byte('B');
-  cmd[3] = 1;
+  cmd[3] = 0;
   cmd[4] = checksum(cmd, 4);
   setSerialCmdBin (charger, cmd, 5);
   return;
@@ -651,6 +654,7 @@ void updateMfieldValue (void* arg)
   if (BUTTON_MODE_SET == mbutton->buttonMode)
     {
       charger->setVoltage = mvals->currentField;
+      charger->setFieldUpdate = TRUE;
       mvals->setField =  mvals->currentField;
       mbutton->buttonMode = mbutton->buttonPreviousMode;
       mbutton->buttonEnabled = BUTTON_ENABLED;
@@ -718,13 +722,14 @@ void updateChargerInfo(void * arg)
     if (byte('B') == rs485->recvbuf[2])
     {
      float * recvvoltage = (float*)&(rs485->recvbuf[4]);
-     long newvoltage = ceil(((*recvvoltage)*1000.));
-     setChargerVoltage(rs485, chargerControl->setVoltage);
-     chargerControl->status =  CHARGER_SET_VOLTAGE;
-     if (newvoltage != chargerControl->voltage)
-     {
-        chargerControl->voltage = newvoltage;
-        return;
+     long newvoltage = round(((*recvvoltage)*1000.));
+     chargerControl->voltage = newvoltage;
+
+      if (chargerControl->setFieldUpdate)
+      {
+        setChargerVoltage(rs485, chargerControl->setVoltage);
+        chargerControl->setFieldUpdate = FALSE;
+        chargerControl->status =  CHARGER_SET_VOLTAGE; 
       }
 
       return;
