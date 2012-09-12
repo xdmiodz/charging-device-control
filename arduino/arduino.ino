@@ -159,7 +159,7 @@ struct _pfeiferControl
 {
   struct _rs485 * rs485;
   char pressure[MAX_LEN_MSG];
-  
+  boolean warning;
 } pfeiferControl;
 
 struct _lcdControl
@@ -239,6 +239,7 @@ void setup()
   /*init pfeifer control*/
   pfeiferControl.rs485 = &rs485Pfeifer;
   pfeiferControl.pressure[0] = '\0';
+  pfeiferControl.warning = TRUE;
 
   //init timer for Pfeifer Device
   pfeiferTimer.startTime = millis();
@@ -461,9 +462,20 @@ void printCurrentField(LiquidCrystal * lcd, long val)
   lcd->print (val);
 }
 
-void printPressure(LiquidCrystal * lcd, char * val)
+void printPressure(LiquidCrystal * lcd, char * val,
+                  boolean warning)
 {
-  lcd->setCursor (3,0);
+  //printEmptyLine (lcd, 2, 0, 14);
+  lcd->setCursor (2,0);
+  if (warning)
+  {
+    lcd->print("!");  
+  }  
+  else
+    {
+      lcd->print(" ");
+    }
+
   lcd->print (val);
 }
 
@@ -492,7 +504,7 @@ void updateLCD(void * arg)
       lcdControl->varistorField = mvals->currentField;
       printCurrentField(lcd, lcdControl->varistorField);
     }
-  printPressure(lcd, pfeifer->pressure);
+  printPressure(lcd, pfeifer->pressure, pfeifer->warning);
 }
 
 void changeVbandMode (struct _button * mbutton, 
@@ -749,13 +761,15 @@ void updatePfeiferInfo (void *arg)
     {
       byte i = 0;
       rs485->updateInfo = 0;
-      printEmptyLine (rs485->lcd, 3, 0, 14);
-      rs485->lcd->setCursor(3,0);
+      pfeifer->warning = FALSE;
       strncpy(pfeifer->pressure, &rs485->recvbuf[5], rs485->recvd - 7);
       pfeifer->pressure[rs485->recvd - 7] = byte('\0');
       rs485->recvd = 0;
       rs485->sent = 0;
     }
+    else
+      pfeifer->warning = TRUE;
+
 }
 
  
