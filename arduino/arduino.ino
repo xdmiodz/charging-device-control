@@ -5,8 +5,8 @@
 #define PfeiferSerialControlPin 38
 #define PfeiferSerialBaudrate 9600
 
-#define ChargerSerial Serial2
-#define ChargerSerialControlPin 36
+#define ChargerSerial Serial1
+#define ChargerSerialControlPin 34
 #define ChargerSerialBaudrate 9600
 
 #define PfeiferUpdateTimeout 5000
