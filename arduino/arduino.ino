@@ -201,7 +201,7 @@ void setup()
   mfieldvals.maxval = vbands[0].maxv;
   mfieldvals.minval = vbands[0].minv;
   mfieldvals.setField = mfieldvals.minval;
-  mfieldvals.currentField = mfieldvals.minval;
+  mfieldvals.currentField = 0;
 
   //init timer for mfield varistor
   MFieldTimer.startTime = millis();
