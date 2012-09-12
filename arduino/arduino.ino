@@ -28,15 +28,15 @@ struct vband
 #define MAX_VBAND_ID 8
 
 //voltage bands available for setting
-struct vband vbands[{0, 100, 200},
-                    {1, 200, 300},
-                    {2, 300, 400},
-                    {3, 400, 500}
-                    {4, 500, 600},
-                    {5, 600, 700},
-                    {6, 700, 800},
-                    {7, 800, 900},
-                    {8, 900, 1000}];
+struct vband vbands[9] = {{0, 100, 200},
+                         {1, 200, 300},
+                         {2, 300, 400},
+                         {3, 400, 500},
+                         {4, 500, 600},
+                         {5, 600, 700},
+                         {6, 700, 800},
+                         {7, 800, 900},
+                         {8, 900, 1000}};
 
 struct timer 
 {
@@ -428,14 +428,14 @@ void printButtonMode(LiquidCrystal * lcd,
   switch (mbutton->buttonMode)
     {
     case BUTTON_MODE_VBAND:
-      lcd->setCursor (12,1);
+      lcd->setCursor (13,1);
       lcd->print ("[");
-      lcd->print (mvals->vband);
+      lcd->print (mvals->vband + 1);
       lcd->print ("]");
       break;
     case BUTTON_MODE_SET:
-      lcd->setCursor (14,1);
-      lcd->print (" ");
+      lcd->setCursor (13,1);
+      lcd->print ("  ");
       lcd->print (char(0x9B)); //battery symbol
       break;
     default:
@@ -446,7 +446,7 @@ void printButtonMode(LiquidCrystal * lcd,
 void printSetField(LiquidCrystal * lcd, long val)
 {
   lcd->setCursor (7, 1);
-  lcd->print("        ");
+  lcd->print("      ");
   lcd->setCursor (7, 1);
   lcd->print ("/ ");
   lcd->print (val);
@@ -631,7 +631,8 @@ void updateMfieldValue (void* arg)
   mvals->accumulatedRawCurrent = ceil(mvals->accumulatedRaw/mvals->counts);
   float x = mvals->accumulatedRawCurrent/1024.;
   long realField = ceil(k*x + b);
-  
+  mvals->currentField = realField;
+
   mvals->accumulatedRaw = 0;
   mvals->counts = 0;
   
